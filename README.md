@@ -1,19 +1,23 @@
 # 人因工程个人助手
 
-一个证据驱动的人因研究工作台。当前第一个可运行切片支持：
+一个证据驱动的人因研究工作台。目前已完成“智能问题界定”闭环：
 
 1. 创建人因研究项目；
-2. 将痛点整理为结构化问题界定草案；
-3. 通过 LangGraph 暂停工作流，等待人工审批；
-4. 审批后保留项目状态与研究产物。
+2. Agent 识别信息缺口并提出 3–5 个澄清问题；
+3. 根据回答生成结构化问题界定；
+4. 用户可以编辑、反馈重生成或批准；
+5. 所有版本、审批记录和 LangGraph 暂停状态都可持久恢复。
 
-## 目录
+## 技术结构
 
 ```text
-backend/   FastAPI、领域模型、LangGraph 工作流和 SQLite 存储
 frontend/  Next.js 研究工作台
-docs/      架构与产品决策
+backend/   FastAPI、领域模型、LangGraph 工作流和 SQLite 适配器
+docs/      架构说明
 ```
+
+默认使用本地规则适配器，不需要模型密钥。配置 `HFA_LLM_API_KEY` 后，后端会启用
+OpenAI Responses 结构化输出，并记录模型、提示版本和生成时间。
 
 ## 本地运行
 
@@ -21,9 +25,19 @@ docs/      架构与产品决策
 
 ```powershell
 cd backend
+Copy-Item .env.example .env
 uv sync --extra dev
 uv run uvicorn app.main:app --reload --port 8000
 ```
+
+如需启用模型，在 `backend/.env` 中填写：
+
+```dotenv
+HFA_LLM_API_KEY=your-key
+HFA_LLM_MODEL=gpt-6-luna
+```
+
+`.env` 已被 Git 忽略，不要把密钥写入 `.env.example`。
 
 ### 前端
 
@@ -47,9 +61,13 @@ pnpm lint
 pnpm build
 ```
 
+后端测试包括：规则实现、完整 HTTP 流程、编辑与重生成、跨进程检查点恢复，以及
+OpenAI 严格 JSON Schema 请求和响应解析。
+
 ## 当前限制
 
-- 问题界定使用本地规则实现，尚未接入真实 LLM；
-- LangGraph 检查点当前保存在进程内，项目与产物保存在 SQLite；
-- 文献检索、实验设计、数据分析与报告模块将在后续切片实现。
+- SQLite 检查点适合本地开发，生产环境应迁移至 PostgreSQL；
+- 尚未实现用户身份、项目权限和并发编辑；
+- 文献检索、证据提取、实验设计和数据分析仍是后续里程碑；
+- 自动化测试不会调用真实模型，真实调用需要单独的集成测试环境。
 

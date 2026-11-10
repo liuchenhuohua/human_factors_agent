@@ -9,7 +9,7 @@ from app.transport.http import create_router
 from app.workflows.project_workflow import ProjectWorkflow
 
 
-def test_create_and_approve_project(tmp_path: Path) -> None:
+def test_full_problem_framing_http_flow(tmp_path: Path) -> None:
     workflow = ProjectWorkflow(
         RuleBasedProblemFramer(), SQLiteProjectStore(tmp_path / "http.db")
     )
@@ -27,10 +27,24 @@ def test_create_and_approve_project(tmp_path: Path) -> None:
             "constraints": ["测试时间不超过 30 分钟"],
         },
     )
-
     assert response.status_code == 201
     project = response.json()
-    assert project["stage"] == "problem_frame_review"
+    assert project["stage"] == "clarification_required"
+
+    clarification = client.post(
+        f"/api/projects/{project['id']}/clarifications",
+        json={
+            "answers": {
+                "baseline_severity": "每周约 5 次错误",
+                "suspected_factors": "信息密度和操作经验",
+                "decision_goal": "优化表单布局",
+            }
+        },
+    )
+    assert clarification.status_code == 200
+    framed = clarification.json()
+    assert framed["stage"] == "problem_frame_review"
+    assert framed["problem_frame_version"] == 1
 
     approval = client.post(
         f"/api/projects/{project['id']}/problem-frame/approve"

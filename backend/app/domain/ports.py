@@ -1,11 +1,22 @@
 from typing import Protocol
 from uuid import UUID
 
-from app.domain.project import ProblemFrame, Project, ProjectIntake
+from app.domain.project import ClarificationQuestion, ProblemFrame, Project, ProjectIntake
+
+
+class ProblemFramingError(RuntimeError):
+    """Raised when a framing adapter cannot produce a valid artifact."""
 
 
 class ProblemFramer(Protocol):
-    def frame(self, intake: ProjectIntake) -> ProblemFrame: ...
+    def identify_gaps(self, intake: ProjectIntake) -> list[ClarificationQuestion]: ...
+
+    def frame(
+        self,
+        intake: ProjectIntake,
+        clarification_answers: dict[str, str],
+        revision_feedback: str | None = None,
+    ) -> ProblemFrame: ...
 
 
 class ProjectStore(Protocol):
