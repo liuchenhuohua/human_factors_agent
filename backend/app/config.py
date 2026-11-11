@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-6-luna"
     llm_timeout_seconds: float = 60.0
+    crossref_base_url: str = "https://api.crossref.org/v1"
+    crossref_timeout_seconds: float = 30.0
+    crossref_mailto: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="HFA_", env_file=".env")
 

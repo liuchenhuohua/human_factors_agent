@@ -8,7 +8,7 @@
 - 模型输出必须先通过领域模型验证，再进入项目记录；
 - 每次生成和人工修改都创建新版本，不覆盖历史版本。
 
-## 当前工作流
+## 问题界定工作流
 
 ```text
 创建项目
@@ -66,8 +66,33 @@ workflow_checkpoints.sqlite LangGraph 检查点与暂停状态
 SQLite 只用于本地开发和轻量部署。生产版本计划使用 PostgreSQL 项目存储与
 `PostgresSaver`，但保持现有领域接口不变。
 
+## 文献证据工作流
+
+```text
+已批准的问题界定
+   |
+   v
+EvidencePlanner ── RuleBasedEvidencePlanner / OpenAIEvidencePlanner
+   |
+   v
+review_search_plan ── interrupt: 人工编辑与确认
+   |
+   v
+CrossrefLiteratureSearch
+   |
+   v
+去重并保存 LiteratureCandidate
+   |
+   v
+await_screening ── interrupt: 人工纳入或排除
+```
+
+`EvidenceWorkflow` 与 `ProjectWorkflow` 使用不同的 LangGraph thread id，并共享同一个
+持久化 checkpointer。文献源位于 `LiteratureSearch` 接口后，目前的适配器是 Crossref。
+筛选决定直接写入独立的 `evidence_reviews` 表，不修改已批准的问题界定。
+
 ## 下一模块
 
-`evidence` 文献证据模块将包含：检索策略、文献元数据、证据条目、原文定位、证据等级、
-引用核验和证据综合。该模块只消费已批准的问题界定。
+下一切片将对已纳入文献构建 `EvidenceItem`：研究对象、方法、样本、测量指标、结果、
+局限、原文定位和证据等级。摘要或 PDF 内容必须遵守来源许可并保留引用位置。
 

@@ -2,7 +2,7 @@ import json
 
 import httpx
 
-from app.adapters.openai_problem_framer import OpenAIResponsesGenerator
+from app.adapters.openai_responses import OpenAIResponsesGenerator
 from app.domain.project import ProblemFrameContent
 
 

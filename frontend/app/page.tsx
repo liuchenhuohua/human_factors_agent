@@ -54,10 +54,48 @@ type Project = {
   }>;
 };
 
+type SearchPlanContent = {
+  query: string;
+  keywords: string[];
+  inclusion_criteria: string[];
+  exclusion_criteria: string[];
+  from_year: number | null;
+  until_year: number | null;
+  max_results: number;
+};
+
+type SearchPlan = SearchPlanContent & {
+  generation: GenerationMetadata;
+};
+
+type LiteratureCandidate = {
+  id: string;
+  source: string;
+  source_id: string;
+  doi: string | null;
+  title: string;
+  authors: string[];
+  publication_year: number | null;
+  venue: string | null;
+  url: string;
+  work_type: string | null;
+  screening_status: "unscreened" | "included" | "excluded";
+  screening_reason: string | null;
+};
+
+type EvidenceReview = {
+  id: string;
+  project_id: string;
+  stage: "search_plan_review" | "screening";
+  search_plan: SearchPlan;
+  candidates: LiteratureCandidate[];
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function Home() {
   const [project, setProject] = useState<Project | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceReview | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [revisionFeedback, setRevisionFeedback] = useState("");
   const [editing, setEditing] = useState(false);
@@ -93,6 +131,7 @@ export default function Home() {
       .filter(Boolean);
     setAnswers({});
     setEditing(false);
+    setEvidence(null);
     await requestProject("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -149,6 +188,56 @@ export default function Home() {
     if (updated) setEditing(false);
   }
 
+  async function requestEvidence(path: string, init?: RequestInit) {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBase}${path}`, init);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? "文献工作流请求失败。");
+      }
+      const updated: EvidenceReview = await response.json();
+      setEvidence(updated);
+      return updated;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "发生未知错误");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function startEvidenceReview() {
+    if (!project) return;
+    await requestEvidence(`/api/projects/${project.id}/evidence`, { method: "POST" });
+  }
+
+  async function approveSearchPlan(content: SearchPlanContent) {
+    if (!project) return;
+    await requestEvidence(`/api/projects/${project.id}/evidence/search-plan/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(content),
+    });
+  }
+
+  async function screenCandidate(
+    candidateId: string,
+    status: "included" | "excluded",
+    reason: string,
+  ) {
+    if (!project) return;
+    await requestEvidence(
+      `/api/projects/${project.id}/evidence/candidates/${candidateId}/screen`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, reason }),
+      },
+    );
+  }
+
   return (
     <main>
       <header className="hero">
@@ -163,7 +252,7 @@ export default function Home() {
         </div>
       </header>
 
-      <WorkflowStrip stage={project?.stage ?? "intake"} />
+      <WorkflowStrip stage={project?.stage ?? "intake"} evidence={evidence} />
 
       <div className="workspace">
         <section className="panel intake-panel">
@@ -215,7 +304,7 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <span className="section-kicker">Agent 产物</span>
-              <h2>{resultTitle(project?.stage)}</h2>
+              <h2>{resultTitle(project?.stage, evidence?.stage)}</h2>
             </div>
             {project && (
               <span className={`badge ${project.stage}`}>
@@ -238,14 +327,14 @@ export default function Home() {
             />
           )}
 
-          {project?.problem_frame && !editing && (
+          {project?.problem_frame && !editing && !evidence && (
             <ProblemFrameView
               frame={project.problem_frame}
               version={project.problem_frame_version}
             />
           )}
 
-          {project?.problem_frame && editing && (
+          {project?.problem_frame && editing && !evidence && (
             <ProblemFrameEditor
               frame={project.problem_frame}
               loading={loading}
@@ -254,7 +343,7 @@ export default function Home() {
             />
           )}
 
-          {project?.stage === "problem_frame_review" && !editing && (
+          {project?.stage === "problem_frame_review" && !editing && !evidence && (
             <div className="review-controls">
               <div className="approval-box">
                 <div>
@@ -286,10 +375,31 @@ export default function Home() {
             </div>
           )}
 
-          {project?.stage === "problem_frame_approved" && (
-            <div className="success-box">
-              问题界定第 {project.problem_frame_version} 版已批准，可以进入文献证据阶段。
+          {project?.stage === "problem_frame_approved" && !evidence && (
+            <div className="success-box evidence-entry">
+              <span>
+                问题界定第 {project.problem_frame_version} 版已批准，可以进入文献证据阶段。
+              </span>
+              <button disabled={loading} onClick={startEvidenceReview}>
+                生成文献检索策略
+              </button>
             </div>
+          )}
+
+          {evidence?.stage === "search_plan_review" && (
+            <SearchPlanEditor
+              plan={evidence.search_plan}
+              loading={loading}
+              onApprove={approveSearchPlan}
+            />
+          )}
+
+          {evidence?.stage === "screening" && (
+            <LiteratureScreening
+              candidates={evidence.candidates}
+              loading={loading}
+              onScreen={screenCandidate}
+            />
           )}
 
           {error && <div className="error-box">{error}</div>}
@@ -299,8 +409,14 @@ export default function Home() {
   );
 }
 
-function WorkflowStrip({ stage }: { stage: ProjectStage }) {
-  const current = stage === "problem_frame_approved" ? 1 : 0;
+function WorkflowStrip({
+  stage,
+  evidence,
+}: {
+  stage: ProjectStage;
+  evidence: EvidenceReview | null;
+}) {
+  const current = evidence || stage === "problem_frame_approved" ? 1 : 0;
   return (
     <section className="workflow-strip" aria-label="研究工作流">
       {["问题界定", "文献证据", "实验设计", "数据分析", "人因建议"].map(
@@ -455,6 +571,225 @@ function ProblemFrameEditor({
   );
 }
 
+function SearchPlanEditor({
+  plan,
+  loading,
+  onApprove,
+}: {
+  plan: SearchPlan;
+  loading: boolean;
+  onApprove: (content: SearchPlanContent) => void;
+}) {
+  const [content, setContent] = useState<SearchPlanContent>({
+    query: plan.query,
+    keywords: plan.keywords,
+    inclusion_criteria: plan.inclusion_criteria,
+    exclusion_criteria: plan.exclusion_criteria,
+    from_year: plan.from_year,
+    until_year: plan.until_year,
+    max_results: plan.max_results,
+  });
+
+  function updateList(
+    field: "keywords" | "inclusion_criteria" | "exclusion_criteria",
+    value: string,
+  ) {
+    setContent((current) => ({
+      ...current,
+      [field]: value.split("\n").map((item) => item.trim()).filter(Boolean),
+    }));
+  }
+
+  return (
+    <div className="search-plan-editor">
+      <div className="form-intro">
+        <span>检索策略需要确认</span>
+        <p>关键词将发送到 Crossref。确认前可以修改检索式、年份和筛选标准。</p>
+      </div>
+      <label>
+        英文检索式
+        <textarea
+          rows={4}
+          value={content.query}
+          onChange={(event) =>
+            setContent((current) => ({ ...current, query: event.target.value }))
+          }
+        />
+      </label>
+      <label>
+        关键词 <small>每行一项</small>
+        <textarea
+          rows={5}
+          value={content.keywords.join("\n")}
+          onChange={(event) => updateList("keywords", event.target.value)}
+        />
+      </label>
+      <div className="field-grid">
+        <label>
+          起始年份
+          <input
+            type="number"
+            min={1900}
+            max={2100}
+            value={content.from_year ?? ""}
+            onChange={(event) =>
+              setContent((current) => ({
+                ...current,
+                from_year: event.target.value ? Number(event.target.value) : null,
+              }))
+            }
+          />
+        </label>
+        <label>
+          截止年份
+          <input
+            type="number"
+            min={1900}
+            max={2100}
+            value={content.until_year ?? ""}
+            onChange={(event) =>
+              setContent((current) => ({
+                ...current,
+                until_year: event.target.value ? Number(event.target.value) : null,
+              }))
+            }
+          />
+        </label>
+      </div>
+      <label>
+        纳入标准 <small>每行一项</small>
+        <textarea
+          rows={5}
+          value={content.inclusion_criteria.join("\n")}
+          onChange={(event) => updateList("inclusion_criteria", event.target.value)}
+        />
+      </label>
+      <label>
+        排除标准 <small>每行一项</small>
+        <textarea
+          rows={5}
+          value={content.exclusion_criteria.join("\n")}
+          onChange={(event) => updateList("exclusion_criteria", event.target.value)}
+        />
+      </label>
+      <label>
+        最大候选数量
+        <input
+          type="number"
+          min={5}
+          max={50}
+          value={content.max_results}
+          onChange={(event) =>
+            setContent((current) => ({
+              ...current,
+              max_results: Number(event.target.value),
+            }))
+          }
+        />
+      </label>
+      <button
+        className="primary-button"
+        disabled={loading}
+        onClick={() => onApprove(content)}
+      >
+        {loading ? "正在检索 Crossref…" : "确认策略并检索文献"}
+        <span>→</span>
+      </button>
+    </div>
+  );
+}
+
+function LiteratureScreening({
+  candidates,
+  loading,
+  onScreen,
+}: {
+  candidates: LiteratureCandidate[];
+  loading: boolean;
+  onScreen: (
+    candidateId: string,
+    status: "included" | "excluded",
+    reason: string,
+  ) => void;
+}) {
+  const included = candidates.filter((item) => item.screening_status === "included").length;
+  const excluded = candidates.filter((item) => item.screening_status === "excluded").length;
+  return (
+    <div className="screening-board">
+      <div className="screening-summary">
+        <span>候选 {candidates.length}</span>
+        <span className="included">已纳入 {included}</span>
+        <span className="excluded">已排除 {excluded}</span>
+      </div>
+      {candidates.length === 0 && (
+        <div className="empty-state compact-empty">
+          <h3>没有找到候选文献</h3>
+          <p>当前切片会保留空结果；下一版将增加修改策略并重新检索。</p>
+        </div>
+      )}
+      <div className="candidate-list">
+        {candidates.map((candidate) => (
+          <CandidateCard
+            candidate={candidate}
+            loading={loading}
+            onScreen={onScreen}
+            key={candidate.id}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CandidateCard({
+  candidate,
+  loading,
+  onScreen,
+}: {
+  candidate: LiteratureCandidate;
+  loading: boolean;
+  onScreen: (
+    candidateId: string,
+    status: "included" | "excluded",
+    reason: string,
+  ) => void;
+}) {
+  const [reason, setReason] = useState(candidate.screening_reason ?? "");
+  return (
+    <article className={`candidate-card ${candidate.screening_status}`}>
+      <div className="candidate-meta">
+        <span>{candidate.publication_year ?? "年份未知"}</span>
+        <span>{candidate.venue ?? candidate.work_type ?? "来源未知"}</span>
+        {candidate.doi && <span>DOI {candidate.doi}</span>}
+      </div>
+      <h3>{candidate.title}</h3>
+      <p>{candidate.authors.length ? candidate.authors.join("、") : "作者信息缺失"}</p>
+      <a href={candidate.url} target="_blank" rel="noreferrer">查看来源 ↗</a>
+      <textarea
+        rows={2}
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="记录纳入或排除理由"
+      />
+      <div className="candidate-actions">
+        <button
+          disabled={loading || reason.trim().length < 3}
+          onClick={() => onScreen(candidate.id, "excluded", reason)}
+        >
+          排除
+        </button>
+        <button
+          className="include-button"
+          disabled={loading || reason.trim().length < 3}
+          onClick={() => onScreen(candidate.id, "included", reason)}
+        >
+          纳入
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function ArtifactList({
   title,
   items,
@@ -484,7 +819,9 @@ function ArtifactList({
   );
 }
 
-function resultTitle(stage?: ProjectStage) {
+function resultTitle(stage?: ProjectStage, evidenceStage?: EvidenceReview["stage"]) {
+  if (evidenceStage === "search_plan_review") return "文献检索策略";
+  if (evidenceStage === "screening") return "候选文献筛选";
   return stage === "clarification_required" ? "补充关键信息" : "问题界定草案";
 }
 

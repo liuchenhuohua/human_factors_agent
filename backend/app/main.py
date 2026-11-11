@@ -8,15 +8,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from app.adapters.openai_problem_framer import (
-    OpenAIProblemFramer,
-    OpenAIResponsesGenerator,
-)
+from app.adapters.openai_problem_framer import OpenAIProblemFramer
+from app.adapters.openai_responses import OpenAIResponsesGenerator
+from app.adapters.crossref_search import CrossrefLiteratureSearch
+from app.adapters.evidence_planner import OpenAIEvidencePlanner, RuleBasedEvidencePlanner
 from app.adapters.problem_framer import RuleBasedProblemFramer
+from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
 from app.config import Settings, settings
 from app.domain.ports import ProblemFramer
+from app.transport.evidence_http import create_evidence_router
 from app.transport.http import create_router
+from app.workflows.evidence_workflow import EvidenceWorkflow
 from app.workflows.project_workflow import ProjectWorkflow
 
 
@@ -36,6 +39,7 @@ def build_problem_framer(
 
 def create_app(app_settings: Settings = settings) -> FastAPI:
     store = SQLiteProjectStore(app_settings.database_path)
+    evidence_store = SQLiteEvidenceStore(app_settings.database_path)
     checkpoint_connection = sqlite3.connect(
         app_settings.checkpoint_database_path,
         check_same_thread=False,
@@ -43,6 +47,23 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     checkpointer = SqliteSaver(checkpoint_connection)
     framer, model_generator = build_problem_framer(app_settings)
     workflow = ProjectWorkflow(framer, store, checkpointer)
+    evidence_planner = (
+        OpenAIEvidencePlanner(model_generator)
+        if model_generator is not None
+        else RuleBasedEvidencePlanner()
+    )
+    literature_search = CrossrefLiteratureSearch(
+        base_url=app_settings.crossref_base_url,
+        timeout_seconds=app_settings.crossref_timeout_seconds,
+        mailto=app_settings.crossref_mailto,
+    )
+    evidence_workflow = EvidenceWorkflow(
+        evidence_planner,
+        literature_search,
+        store,
+        evidence_store,
+        checkpointer,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -50,10 +71,11 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         checkpoint_connection.close()
         if model_generator is not None:
             model_generator.close()
+        literature_search.close()
 
     application = FastAPI(
         title=app_settings.app_name,
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
     application.add_middleware(
@@ -64,6 +86,9 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         allow_headers=["*"],
     )
     application.include_router(create_router(workflow), prefix="/api")
+    application.include_router(
+        create_evidence_router(evidence_workflow), prefix="/api"
+    )
     return application
 
 
