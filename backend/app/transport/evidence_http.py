@@ -1,13 +1,21 @@
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.domain.evidence import (
+    EvidenceItemReviewRequest,
     EvidenceReview,
     ScreeningRequest,
     SearchPlanContent,
 )
-from app.domain.evidence_ports import EvidencePlanningError, LiteratureSearchError
+from app.domain.evidence_ports import (
+    DocumentParsingError,
+    DocumentValidationError,
+    EvidenceExtractionError,
+    EvidencePlanningError,
+    LiteratureSearchError,
+)
 from app.workflows.evidence_workflow import EvidenceWorkflow
 
 
@@ -59,5 +67,51 @@ def create_evidence_router(workflow: EvidenceWorkflow) -> APIRouter:
             return workflow.screen_candidate(project_id, candidate_id, request)
         except KeyError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @router.post(
+        "/projects/{project_id}/evidence/candidates/{candidate_id}/document",
+        response_model=EvidenceReview,
+    )
+    async def upload_candidate_document(
+        project_id: UUID,
+        candidate_id: UUID,
+        file: Annotated[UploadFile, File(description="Selectable-text research PDF")],
+    ) -> EvidenceReview:
+        content = await file.read(workflow.max_upload_bytes + 1)
+        await file.close()
+        try:
+            return workflow.upload_pdf(
+                project_id=project_id,
+                candidate_id=candidate_id,
+                filename=file.filename or "",
+                content_type=file.content_type,
+                content=content,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (DocumentValidationError, DocumentParsingError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except EvidenceExtractionError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @router.put(
+        "/projects/{project_id}/evidence/evidence-items/{item_id}",
+        response_model=EvidenceReview,
+    )
+    def review_evidence_item(
+        project_id: UUID,
+        item_id: UUID,
+        request: EvidenceItemReviewRequest,
+    ) -> EvidenceReview:
+        try:
+            return workflow.review_evidence_item(project_id, item_id, request)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (DocumentValidationError, DocumentParsingError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     return router

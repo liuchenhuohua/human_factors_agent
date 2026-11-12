@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     crossref_base_url: str = "https://api.crossref.org/v1"
     crossref_timeout_seconds: float = 30.0
     crossref_mailto: str | None = None
+    document_storage_path: Path = Path("data/uploads")
+    max_pdf_upload_mb: int = 25
+    max_pdf_pages: int = 250
 
     model_config = SettingsConfigDict(env_prefix="HFA_", env_file=".env")
 

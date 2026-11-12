@@ -7,16 +7,23 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from app.domain.evidence import (
+    EvidenceItemContent,
+    EvidenceItemReviewRequest,
     EvidenceReview,
     LiteratureCandidate,
+    ParsedDocument,
     ScreeningRequest,
     SearchPlan,
     SearchPlanContent,
 )
 from app.domain.evidence_ports import (
+    DocumentStorage,
+    DocumentValidationError,
+    EvidenceExtractor,
     EvidencePlanner,
     EvidenceStore,
     LiteratureSearch,
+    PdfTextExtractor,
 )
 from app.domain.ports import ProjectStore
 from app.domain.project import Project, ProjectStage
@@ -37,12 +44,20 @@ class EvidenceWorkflow:
         search: LiteratureSearch,
         project_store: ProjectStore,
         evidence_store: EvidenceStore,
+        document_storage: DocumentStorage,
+        pdf_extractor: PdfTextExtractor,
+        evidence_extractor: EvidenceExtractor,
         checkpointer: BaseCheckpointSaver | None = None,
+        max_upload_bytes: int = 25 * 1024 * 1024,
     ) -> None:
         self._planner = planner
         self._search = search
         self._project_store = project_store
         self._evidence_store = evidence_store
+        self._document_storage = document_storage
+        self._pdf_extractor = pdf_extractor
+        self._evidence_extractor = evidence_extractor
+        self.max_upload_bytes = max_upload_bytes
         self._graph = self._build_graph(checkpointer or InMemorySaver())
 
     def _build_graph(self, checkpointer: BaseCheckpointSaver):
@@ -96,6 +111,67 @@ class EvidenceWorkflow:
         self._evidence_store.save(review)
         return review
 
+    def upload_pdf(
+        self,
+        project_id: UUID,
+        candidate_id: UUID,
+        filename: str,
+        content_type: str | None,
+        content: bytes,
+    ) -> EvidenceReview:
+        review = self._require_review(project_id)
+        candidate = review.require_included_candidate(candidate_id)
+        self._validate_pdf(filename, content_type, content)
+        if any(document.candidate_id == candidate_id for document in review.documents):
+            raise ValueError("This literature candidate already has an uploaded PDF")
+        parsed = self._pdf_extractor.parse(content)
+        document = self._document_storage.save(
+            project_id=project_id,
+            candidate_id=candidate_id,
+            filename=filename,
+            content_type="application/pdf",
+            content=content,
+            page_count=len(parsed.pages),
+        )
+        try:
+            item = self._evidence_extractor.extract(candidate, document, parsed)
+            review = review.with_extraction(document, item)
+            self._evidence_store.save(review)
+        except Exception:
+            self._document_storage.delete(document.storage_key)
+            raise
+        return review
+
+    def review_evidence_item(
+        self,
+        project_id: UUID,
+        item_id: UUID,
+        request: EvidenceItemReviewRequest,
+    ) -> EvidenceReview:
+        review = self._require_review(project_id)
+        item = next(
+            (candidate for candidate in review.evidence_items if candidate.id == item_id),
+            None,
+        )
+        if item is None:
+            raise KeyError(f"Evidence item {item_id} not found")
+        document = next(
+            (candidate for candidate in review.documents if candidate.id == item.document_id),
+            None,
+        )
+        if document is None:
+            raise KeyError(f"Document {item.document_id} not found")
+        try:
+            parsed = self._pdf_extractor.parse(
+                self._document_storage.read(document.storage_key)
+            )
+        except FileNotFoundError as error:
+            raise DocumentValidationError("The source PDF is missing from storage") from error
+        self._validate_source_excerpts(request.content, parsed)
+        review = review.review_evidence_item(item_id, request)
+        self._evidence_store.save(review)
+        return review
+
     def get(self, project_id: UUID) -> EvidenceReview | None:
         return self._evidence_store.get_by_project(project_id)
 
@@ -146,6 +222,39 @@ class EvidenceWorkflow:
         if review is None:
             raise KeyError(f"Evidence review for project {project_id} not found")
         return review
+
+    def _validate_pdf(
+        self,
+        filename: str,
+        content_type: str | None,
+        content: bytes,
+    ) -> None:
+        if not filename or not filename.lower().endswith(".pdf"):
+            raise DocumentValidationError("Only .pdf files are accepted")
+        if content_type not in {None, "", "application/pdf", "application/octet-stream"}:
+            raise DocumentValidationError("Uploaded document must use a PDF content type")
+        if not content:
+            raise DocumentValidationError("Uploaded PDF is empty")
+        if len(content) > self.max_upload_bytes:
+            limit_mb = self.max_upload_bytes // (1024 * 1024)
+            raise DocumentValidationError(f"Uploaded PDF exceeds the {limit_mb} MB limit")
+        if b"%PDF-" not in content[:1024]:
+            raise DocumentValidationError("Uploaded file does not have a valid PDF header")
+
+    @staticmethod
+    def _validate_source_excerpts(
+        content: EvidenceItemContent,
+        parsed: ParsedDocument,
+    ) -> None:
+        pages = {page.page_number: page.text for page in parsed.pages}
+        for excerpt in content.source_excerpts:
+            page_text = pages.get(excerpt.page_number)
+            normalized_page = " ".join(page_text.split()) if page_text else ""
+            normalized_excerpt = " ".join(excerpt.text.split())
+            if not normalized_page or normalized_excerpt not in normalized_page:
+                raise DocumentValidationError(
+                    f"Source excerpt could not be verified on page {excerpt.page_number}"
+                )
 
     @staticmethod
     def _config(project_id: UUID) -> dict[str, dict[str, str]]:

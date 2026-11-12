@@ -12,7 +12,13 @@ from app.adapters.openai_problem_framer import OpenAIProblemFramer
 from app.adapters.openai_responses import OpenAIResponsesGenerator
 from app.adapters.crossref_search import CrossrefLiteratureSearch
 from app.adapters.evidence_planner import OpenAIEvidencePlanner, RuleBasedEvidencePlanner
+from app.adapters.evidence_extractor import (
+    OpenAIEvidenceExtractor,
+    RuleBasedEvidenceExtractor,
+)
+from app.adapters.local_document_storage import LocalDocumentStorage
 from app.adapters.problem_framer import RuleBasedProblemFramer
+from app.adapters.pypdf_parser import PypdfTextExtractor
 from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
 from app.config import Settings, settings
@@ -57,12 +63,21 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         timeout_seconds=app_settings.crossref_timeout_seconds,
         mailto=app_settings.crossref_mailto,
     )
+    evidence_extractor = (
+        OpenAIEvidenceExtractor(model_generator)
+        if model_generator is not None
+        else RuleBasedEvidenceExtractor()
+    )
     evidence_workflow = EvidenceWorkflow(
         evidence_planner,
         literature_search,
         store,
         evidence_store,
-        checkpointer,
+        LocalDocumentStorage(app_settings.document_storage_path),
+        PypdfTextExtractor(app_settings.max_pdf_pages),
+        evidence_extractor,
+        checkpointer=checkpointer,
+        max_upload_bytes=app_settings.max_pdf_upload_mb * 1024 * 1024,
     )
 
     @asynccontextmanager
@@ -75,7 +90,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
 
     application = FastAPI(
         title=app_settings.app_name,
-        version="0.3.0",
+        version="0.4.0",
         lifespan=lifespan,
     )
     application.add_middleware(

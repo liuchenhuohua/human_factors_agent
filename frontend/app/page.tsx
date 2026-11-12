@@ -83,12 +83,55 @@ type LiteratureCandidate = {
   screening_reason: string | null;
 };
 
+type EvidenceDocument = {
+  id: string;
+  candidate_id: string;
+  filename: string;
+  byte_size: number;
+  sha256: string;
+  page_count: number;
+};
+
+type SourceExcerpt = {
+  page_number: number;
+  text: string;
+  relevance: string;
+};
+
+type EvidenceItemContent = {
+  research_questions: string[];
+  study_design: string | null;
+  participants: string | null;
+  sample_size: number | null;
+  task_context: string | null;
+  independent_variables: string[];
+  dependent_variables: string[];
+  control_variables: string[];
+  measures: string[];
+  statistical_methods: string[];
+  key_findings: string[];
+  effect_sizes: string[];
+  limitations: string[];
+  source_excerpts: SourceExcerpt[];
+};
+
+type EvidenceItem = EvidenceItemContent & {
+  id: string;
+  candidate_id: string;
+  document_id: string;
+  status: "pending_review" | "approved" | "needs_revision";
+  generation: GenerationMetadata;
+  reviewer_note: string | null;
+};
+
 type EvidenceReview = {
   id: string;
   project_id: string;
   stage: "search_plan_review" | "screening";
   search_plan: SearchPlan;
   candidates: LiteratureCandidate[];
+  documents: EvidenceDocument[];
+  evidence_items: EvidenceItem[];
 };
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -234,6 +277,33 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, reason }),
+      },
+    );
+  }
+
+  async function uploadEvidenceDocument(candidateId: string, file: File) {
+    if (!project) return;
+    const body = new FormData();
+    body.append("file", file);
+    await requestEvidence(
+      `/api/projects/${project.id}/evidence/candidates/${candidateId}/document`,
+      { method: "POST", body },
+    );
+  }
+
+  async function reviewEvidenceItem(
+    itemId: string,
+    content: EvidenceItemContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) {
+    if (!project) return;
+    await requestEvidence(
+      `/api/projects/${project.id}/evidence/evidence-items/${itemId}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, status, note: note.trim() || null }),
       },
     );
   }
@@ -397,8 +467,12 @@ export default function Home() {
           {evidence?.stage === "screening" && (
             <LiteratureScreening
               candidates={evidence.candidates}
+              documents={evidence.documents}
+              evidenceItems={evidence.evidence_items}
               loading={loading}
               onScreen={screenCandidate}
+              onUpload={uploadEvidenceDocument}
+              onReview={reviewEvidenceItem}
             />
           )}
 
@@ -701,15 +775,28 @@ function SearchPlanEditor({
 
 function LiteratureScreening({
   candidates,
+  documents,
+  evidenceItems,
   loading,
   onScreen,
+  onUpload,
+  onReview,
 }: {
   candidates: LiteratureCandidate[];
+  documents: EvidenceDocument[];
+  evidenceItems: EvidenceItem[];
   loading: boolean;
   onScreen: (
     candidateId: string,
     status: "included" | "excluded",
     reason: string,
+  ) => void;
+  onUpload: (candidateId: string, file: File) => void;
+  onReview: (
+    itemId: string,
+    content: EvidenceItemContent,
+    status: "approved" | "needs_revision",
+    note: string,
   ) => void;
 }) {
   const included = candidates.filter((item) => item.screening_status === "included").length;
@@ -731,8 +818,12 @@ function LiteratureScreening({
         {candidates.map((candidate) => (
           <CandidateCard
             candidate={candidate}
+            document={documents.find((item) => item.candidate_id === candidate.id)}
+            evidenceItem={evidenceItems.find((item) => item.candidate_id === candidate.id)}
             loading={loading}
             onScreen={onScreen}
+            onUpload={onUpload}
+            onReview={onReview}
             key={candidate.id}
           />
         ))}
@@ -743,18 +834,32 @@ function LiteratureScreening({
 
 function CandidateCard({
   candidate,
+  document,
+  evidenceItem,
   loading,
   onScreen,
+  onUpload,
+  onReview,
 }: {
   candidate: LiteratureCandidate;
+  document?: EvidenceDocument;
+  evidenceItem?: EvidenceItem;
   loading: boolean;
   onScreen: (
     candidateId: string,
     status: "included" | "excluded",
     reason: string,
   ) => void;
+  onUpload: (candidateId: string, file: File) => void;
+  onReview: (
+    itemId: string,
+    content: EvidenceItemContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
 }) {
   const [reason, setReason] = useState(candidate.screening_reason ?? "");
+  const [file, setFile] = useState<File | null>(null);
   return (
     <article className={`candidate-card ${candidate.screening_status}`}>
       <div className="candidate-meta">
@@ -786,7 +891,189 @@ function CandidateCard({
           纳入
         </button>
       </div>
+      {candidate.screening_status === "included" && !document && (
+        <div className="pdf-upload">
+          <div>
+            <strong>上传研究全文</strong>
+            <small>仅支持包含可选择文字的 PDF，最大 25 MB。</small>
+          </div>
+          <input
+            type="file"
+            accept="application/pdf,.pdf"
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          />
+          <button
+            disabled={loading || !file}
+            onClick={() => file && onUpload(candidate.id, file)}
+          >
+            {loading ? "正在提取…" : "上传并提取证据"}
+          </button>
+        </div>
+      )}
+      {document && (
+        <div className="document-meta">
+          <span>PDF 已导入</span>
+          <strong>{document.filename}</strong>
+          <small>{document.page_count} 页 · {(document.byte_size / 1024).toFixed(1)} KB</small>
+        </div>
+      )}
+      {evidenceItem && (
+        <EvidenceItemEditor
+          item={evidenceItem}
+          loading={loading}
+          onReview={onReview}
+        />
+      )}
     </article>
+  );
+}
+
+function EvidenceItemEditor({
+  item,
+  loading,
+  onReview,
+}: {
+  item: EvidenceItem;
+  loading: boolean;
+  onReview: (
+    itemId: string,
+    content: EvidenceItemContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+}) {
+  const [content, setContent] = useState<EvidenceItemContent>({
+    research_questions: item.research_questions,
+    study_design: item.study_design,
+    participants: item.participants,
+    sample_size: item.sample_size,
+    task_context: item.task_context,
+    independent_variables: item.independent_variables,
+    dependent_variables: item.dependent_variables,
+    control_variables: item.control_variables,
+    measures: item.measures,
+    statistical_methods: item.statistical_methods,
+    key_findings: item.key_findings,
+    effect_sizes: item.effect_sizes,
+    limitations: item.limitations,
+    source_excerpts: item.source_excerpts,
+  });
+  const [note, setNote] = useState(item.reviewer_note ?? "");
+
+  const listFields = [
+    ["research_questions", "研究问题或假设"],
+    ["independent_variables", "自变量"],
+    ["dependent_variables", "因变量"],
+    ["control_variables", "控制变量"],
+    ["measures", "测量工具与量表"],
+    ["statistical_methods", "统计方法"],
+    ["key_findings", "关键结果"],
+    ["effect_sizes", "效应量"],
+    ["limitations", "研究局限"],
+  ] as const;
+
+  function updateList(field: typeof listFields[number][0], value: string) {
+    setContent((current) => ({
+      ...current,
+      [field]: value.split("\n").map((entry) => entry.trim()).filter(Boolean),
+    }));
+  }
+
+  return (
+    <div className="evidence-item-editor">
+      <div className="evidence-item-heading">
+        <div>
+          <strong>结构化证据</strong>
+          <small>
+            {item.generation.generator === "human"
+              ? "人工复核版本"
+              : item.generation.model ?? "本地保守提取"}
+          </small>
+        </div>
+        <span className={`evidence-status ${item.status}`}>
+          {item.status === "approved" ? "已批准" : item.status === "needs_revision" ? "需修订" : "待复核"}
+        </span>
+      </div>
+      <div className="field-grid">
+        <label>
+          研究设计
+          <input
+            value={content.study_design ?? ""}
+            onChange={(event) => setContent((current) => ({ ...current, study_design: event.target.value || null }))}
+          />
+        </label>
+        <label>
+          样本量
+          <input
+            type="number"
+            min={1}
+            value={content.sample_size ?? ""}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              sample_size: event.target.value ? Number(event.target.value) : null,
+            }))}
+          />
+        </label>
+      </div>
+      <label>
+        参与者
+        <input
+          value={content.participants ?? ""}
+          onChange={(event) => setContent((current) => ({ ...current, participants: event.target.value || null }))}
+        />
+      </label>
+      <label>
+        任务与场景
+        <textarea
+          rows={2}
+          value={content.task_context ?? ""}
+          onChange={(event) => setContent((current) => ({ ...current, task_context: event.target.value || null }))}
+        />
+      </label>
+      {listFields.map(([field, label]) => (
+        <label key={field}>
+          {label} <small>每行一项</small>
+          <textarea
+            rows={3}
+            value={content[field].join("\n")}
+            onChange={(event) => updateList(field, event.target.value)}
+          />
+        </label>
+      ))}
+      <div className="source-excerpts">
+        <strong>原文依据</strong>
+        {content.source_excerpts.map((excerpt, index) => (
+          <blockquote key={`${excerpt.page_number}-${index}`}>
+            <span>第 {excerpt.page_number} 页 · {excerpt.relevance}</span>
+            {excerpt.text}
+          </blockquote>
+        ))}
+      </div>
+      <label>
+        复核备注
+        <textarea
+          rows={2}
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="记录人工修订或仍需确认的问题"
+        />
+      </label>
+      <div className="evidence-review-actions">
+        <button
+          disabled={loading || note.trim().length < 3}
+          onClick={() => onReview(item.id, content, "needs_revision", note)}
+        >
+          标记需修订
+        </button>
+        <button
+          className="approve-evidence"
+          disabled={loading}
+          onClick={() => onReview(item.id, content, "approved", note)}
+        >
+          批准为可用证据
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -91,8 +91,39 @@ await_screening ── interrupt: 人工纳入或排除
 持久化 checkpointer。文献源位于 `LiteratureSearch` 接口后，目前的适配器是 Crossref。
 筛选决定直接写入独立的 `evidence_reviews` 表，不修改已批准的问题界定。
 
+## 全文证据提取
+
+```text
+已纳入 LiteratureCandidate
+   |
+   v
+校验 PDF ── 大小 / 类型 / 文件头
+   |
+   v
+PdfTextExtractor ── PypdfTextExtractor
+   |
+   v
+DocumentStorage ── LocalDocumentStorage
+   |
+   v
+EvidenceExtractor ── RuleBasedEvidenceExtractor / OpenAIEvidenceExtractor
+   |
+   v
+EvidenceItem（字段 + 页码原文）
+   |
+   v
+人工编辑与批准
+```
+
+上传、解析、存储和结构化提取位于三个独立接口后。工作流只依赖这些接口，因此未来可以
+把本地目录替换为对象存储、把 `pypdf` 替换为带 OCR 的解析器，而不改变 HTTP 或领域层。
+
+`EvidenceItem` 保存研究问题、设计、参与者、样本量、任务场景、变量、量表、统计方法、
+结果、效应量和局限。`source_excerpts` 必须包含页码；模型适配器还会验证原文片段确实
+出现在对应页。未经过人工审批的条目保持 `pending_review`，不能作为后续实验设计的正式输入。
+
 ## 下一模块
 
-下一切片将对已纳入文献构建 `EvidenceItem`：研究对象、方法、样本、测量指标、结果、
-局限、原文定位和证据等级。摘要或 PDF 内容必须遵守来源许可并保留引用位置。
+下一切片将汇总已批准的 `EvidenceItem`，形成跨文献证据矩阵，识别一致结果、冲突、研究
+空白和可迁移性限制，再将矩阵作为实验设计模块的唯一证据输入。
 

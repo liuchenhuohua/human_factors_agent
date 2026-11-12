@@ -1,15 +1,28 @@
+import hashlib
 from pathlib import Path
+from uuid import UUID, uuid4
 
+import pytest
+
+from app.adapters.evidence_extractor import RuleBasedEvidenceExtractor
 from app.adapters.evidence_planner import RuleBasedEvidencePlanner
 from app.adapters.problem_framer import RuleBasedProblemFramer
 from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
 from app.domain.evidence import (
+    EvidenceDocument,
+    EvidenceItemContent,
+    EvidenceItemReviewRequest,
+    EvidenceItemStatus,
     EvidenceStage,
     LiteratureCandidate,
+    ParsedDocument,
+    ParsedPage,
     ScreeningRequest,
     ScreeningStatus,
+    SourceExcerpt,
 )
+from app.domain.evidence_ports import DocumentValidationError
 from app.domain.project import ProjectIntake
 from app.workflows.evidence_workflow import EvidenceWorkflow
 from app.workflows.project_workflow import ProjectWorkflow
@@ -43,6 +56,55 @@ class FakeLiteratureSearch:
         ]
 
 
+class FakeDocumentStorage:
+    def __init__(self) -> None:
+        self.saved: dict[str, bytes] = {}
+
+    def save(
+        self,
+        project_id: UUID,
+        candidate_id: UUID,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        page_count: int,
+    ) -> EvidenceDocument:
+        document_id = uuid4()
+        storage_key = f"{project_id}/{candidate_id}/{document_id}.pdf"
+        self.saved[storage_key] = content
+        return EvidenceDocument(
+            id=document_id,
+            candidate_id=candidate_id,
+            filename=filename,
+            content_type=content_type,
+            byte_size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            storage_key=storage_key,
+            page_count=page_count,
+        )
+
+    def delete(self, storage_key: str) -> None:
+        self.saved.pop(storage_key, None)
+
+    def read(self, storage_key: str) -> bytes:
+        return self.saved[storage_key]
+
+
+class FakePdfTextExtractor:
+    def parse(self, _content: bytes) -> ParsedDocument:
+        return ParsedDocument(
+            pages=[
+                ParsedPage(
+                    page_number=1,
+                    text=(
+                        "This controlled study recruited N = 24 operators. "
+                        "Cognitive workload and task errors were measured."
+                    ),
+                )
+            ]
+        )
+
+
 def approved_project(store: SQLiteProjectStore, answers: dict[str, str]):
     workflow = ProjectWorkflow(RuleBasedProblemFramer(), store)
     project = workflow.start(
@@ -69,6 +131,9 @@ def test_evidence_workflow_plans_searches_and_screens(
         FakeLiteratureSearch(),
         project_store,
         evidence_store,
+        FakeDocumentStorage(),
+        FakePdfTextExtractor(),
+        RuleBasedEvidenceExtractor(),
     )
 
     review = workflow.start(project.id)
@@ -91,3 +156,61 @@ def test_evidence_workflow_plans_searches_and_screens(
 
     assert review.candidates[0].screening_status is ScreeningStatus.INCLUDED
     assert review.candidates[0].screening_reason is not None
+
+    review = workflow.upload_pdf(
+        project.id,
+        candidate.id,
+        "study.pdf",
+        "application/pdf",
+        b"%PDF-1.7 test fixture",
+    )
+    assert review.documents[0].page_count == 1
+    assert review.evidence_items[0].sample_size == 24
+    assert review.evidence_items[0].status is EvidenceItemStatus.PENDING_REVIEW
+
+    with pytest.raises(ValueError, match="cannot be excluded"):
+        workflow.screen_candidate(
+            project.id,
+            candidate.id,
+            ScreeningRequest(
+                status=ScreeningStatus.EXCLUDED,
+                reason="全文核验后发现研究对象不符",
+            ),
+        )
+
+    draft = review.evidence_items[0]
+    content = EvidenceItemContent.model_validate(
+        draft.model_dump(include=set(EvidenceItemContent.model_fields))
+    )
+    invalid_content = content.model_copy(
+        update={
+            "source_excerpts": [
+                SourceExcerpt(
+                    page_number=1,
+                    text="This sentence does not exist in the source PDF.",
+                    relevance="无效测试片段",
+                )
+            ]
+        }
+    )
+    with pytest.raises(DocumentValidationError, match="could not be verified"):
+        workflow.review_evidence_item(
+            project.id,
+            draft.id,
+            EvidenceItemReviewRequest(
+                content=invalid_content,
+                status=EvidenceItemStatus.APPROVED,
+            ),
+        )
+
+    review = workflow.review_evidence_item(
+        project.id,
+        draft.id,
+        EvidenceItemReviewRequest(
+            content=content,
+            status=EvidenceItemStatus.APPROVED,
+            note="已对照原文核验样本量和研究方法",
+        ),
+    )
+    assert review.evidence_items[0].status is EvidenceItemStatus.APPROVED
+    assert review.evidence_items[0].generation.generator == "human"

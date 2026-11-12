@@ -6,10 +6,16 @@ from fastapi.testclient import TestClient
 from app.adapters.evidence_planner import RuleBasedEvidencePlanner
 from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
-from app.domain.evidence import LiteratureCandidate
+from app.adapters.evidence_extractor import RuleBasedEvidenceExtractor
+from app.domain.evidence import EvidenceItemContent, LiteratureCandidate
 from app.transport.evidence_http import create_evidence_router
 from app.workflows.evidence_workflow import EvidenceWorkflow
-from tests.test_evidence_workflow import FakeLiteratureSearch, approved_project
+from tests.test_evidence_workflow import (
+    FakeDocumentStorage,
+    FakeLiteratureSearch,
+    FakePdfTextExtractor,
+    approved_project,
+)
 
 
 def test_evidence_http_flow(
@@ -24,6 +30,9 @@ def test_evidence_http_flow(
         FakeLiteratureSearch(),
         project_store,
         evidence_store,
+        FakeDocumentStorage(),
+        FakePdfTextExtractor(),
+        RuleBasedEvidenceExtractor(),
     )
     app = FastAPI()
     app.include_router(create_evidence_router(workflow), prefix="/api")
@@ -48,9 +57,34 @@ def test_evidence_http_flow(
     screened = client.post(
         f"/api/projects/{project.id}/evidence/candidates/{candidate.id}/screen",
         json={
-            "status": "excluded",
-            "reason": "研究对象与当前目标人群不匹配",
+            "status": "included",
+            "reason": "研究构念、任务场景和结果指标均直接相关",
         },
     )
     assert screened.status_code == 200
-    assert screened.json()["candidates"][0]["screening_status"] == "excluded"
+    assert screened.json()["candidates"][0]["screening_status"] == "included"
+
+    uploaded = client.post(
+        f"/api/projects/{project.id}/evidence/candidates/{candidate.id}/document",
+        files={"file": ("study.pdf", b"%PDF-1.7 test fixture", "application/pdf")},
+    )
+    assert uploaded.status_code == 200
+    payload = uploaded.json()
+    assert payload["documents"][0]["filename"] == "study.pdf"
+    item = payload["evidence_items"][0]
+    assert item["sample_size"] == 24
+
+    content = {
+        key: item[key]
+        for key in EvidenceItemContent.model_fields
+    }
+    approved = client.put(
+        f"/api/projects/{project.id}/evidence/evidence-items/{item['id']}",
+        json={
+            "content": content,
+            "status": "approved",
+            "note": "已逐页核验提取内容",
+        },
+    )
+    assert approved.status_code == 200
+    assert approved.json()["evidence_items"][0]["status"] == "approved"
