@@ -7,7 +7,16 @@ from app.adapters.evidence_planner import RuleBasedEvidencePlanner
 from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
 from app.adapters.evidence_extractor import RuleBasedEvidenceExtractor
-from app.domain.evidence import EvidenceItemContent, LiteratureCandidate
+from app.adapters.evidence_synthesis import (
+    RuleBasedEvidenceAppraiser,
+    RuleBasedEvidenceSynthesizer,
+)
+from app.domain.evidence import (
+    EvidenceAppraisalContent,
+    EvidenceItemContent,
+    EvidenceSynthesisContent,
+    LiteratureCandidate,
+)
 from app.transport.evidence_http import create_evidence_router
 from app.workflows.evidence_workflow import EvidenceWorkflow
 from tests.test_evidence_workflow import (
@@ -33,6 +42,8 @@ def test_evidence_http_flow(
         FakeDocumentStorage(),
         FakePdfTextExtractor(),
         RuleBasedEvidenceExtractor(),
+        RuleBasedEvidenceAppraiser(),
+        RuleBasedEvidenceSynthesizer(),
     )
     app = FastAPI()
     app.include_router(create_evidence_router(workflow), prefix="/api")
@@ -88,3 +99,41 @@ def test_evidence_http_flow(
     )
     assert approved.status_code == 200
     assert approved.json()["evidence_items"][0]["status"] == "approved"
+
+    appraised = client.post(
+        f"/api/projects/{project.id}/evidence/evidence-items/{item['id']}/appraisal"
+    )
+    assert appraised.status_code == 200
+    appraisal = appraised.json()["appraisals"][0]
+    appraisal_content = {
+        key: appraisal[key]
+        for key in EvidenceAppraisalContent.model_fields
+    }
+    appraisal_approved = client.put(
+        f"/api/projects/{project.id}/evidence/appraisals/{appraisal['id']}",
+        json={
+            "content": appraisal_content,
+            "status": "approved",
+            "note": "已人工核验质量评价",
+        },
+    )
+    assert appraisal_approved.status_code == 200
+
+    synthesized = client.post(f"/api/projects/{project.id}/evidence/synthesis")
+    assert synthesized.status_code == 200
+    synthesis = synthesized.json()["synthesis"]
+    assert len(synthesis["matrix"]) == 1
+    synthesis_content = {
+        key: synthesis[key]
+        for key in EvidenceSynthesisContent.model_fields
+    }
+    synthesis_approved = client.put(
+        f"/api/projects/{project.id}/evidence/synthesis",
+        json={
+            "content": synthesis_content,
+            "status": "approved",
+            "note": "已人工核验证据综合",
+        },
+    )
+    assert synthesis_approved.status_code == 200
+    assert synthesis_approved.json()["synthesis"]["status"] == "approved"

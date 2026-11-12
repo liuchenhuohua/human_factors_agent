@@ -7,9 +7,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from app.domain.evidence import (
+    EvidenceAppraisalReviewRequest,
     EvidenceItemContent,
     EvidenceItemReviewRequest,
     EvidenceReview,
+    EvidenceSynthesisReviewRequest,
     LiteratureCandidate,
     ParsedDocument,
     ScreeningRequest,
@@ -19,9 +21,11 @@ from app.domain.evidence import (
 from app.domain.evidence_ports import (
     DocumentStorage,
     DocumentValidationError,
+    EvidenceAppraiser,
     EvidenceExtractor,
     EvidencePlanner,
     EvidenceStore,
+    EvidenceSynthesizer,
     LiteratureSearch,
     PdfTextExtractor,
 )
@@ -47,6 +51,8 @@ class EvidenceWorkflow:
         document_storage: DocumentStorage,
         pdf_extractor: PdfTextExtractor,
         evidence_extractor: EvidenceExtractor,
+        evidence_appraiser: EvidenceAppraiser,
+        evidence_synthesizer: EvidenceSynthesizer,
         checkpointer: BaseCheckpointSaver | None = None,
         max_upload_bytes: int = 25 * 1024 * 1024,
     ) -> None:
@@ -57,6 +63,8 @@ class EvidenceWorkflow:
         self._document_storage = document_storage
         self._pdf_extractor = pdf_extractor
         self._evidence_extractor = evidence_extractor
+        self._evidence_appraiser = evidence_appraiser
+        self._evidence_synthesizer = evidence_synthesizer
         self.max_upload_bytes = max_upload_bytes
         self._graph = self._build_graph(checkpointer or InMemorySaver())
 
@@ -169,6 +177,62 @@ class EvidenceWorkflow:
             raise DocumentValidationError("The source PDF is missing from storage") from error
         self._validate_source_excerpts(request.content, parsed)
         review = review.review_evidence_item(item_id, request)
+        self._evidence_store.save(review)
+        return review
+
+    def appraise_evidence_item(
+        self,
+        project_id: UUID,
+        item_id: UUID,
+    ) -> EvidenceReview:
+        project = self._require_approved_project(project_id)
+        review = self._require_review(project_id)
+        item = next(
+            (item for item in review.evidence_items if item.id == item_id),
+            None,
+        )
+        if item is None:
+            raise KeyError(f"Evidence item {item_id} not found")
+        candidate = next(
+            (candidate for candidate in review.candidates if candidate.id == item.candidate_id),
+            None,
+        )
+        if candidate is None:
+            raise KeyError(f"Candidate {item.candidate_id} not found")
+        appraisal = self._evidence_appraiser.appraise(project, candidate, item)
+        review = review.with_appraisal(appraisal)
+        self._evidence_store.save(review)
+        return review
+
+    def review_appraisal(
+        self,
+        project_id: UUID,
+        appraisal_id: UUID,
+        request: EvidenceAppraisalReviewRequest,
+    ) -> EvidenceReview:
+        review = self._require_review(project_id).review_appraisal(
+            appraisal_id,
+            request,
+        )
+        self._evidence_store.save(review)
+        return review
+
+    def generate_synthesis(self, project_id: UUID) -> EvidenceReview:
+        project = self._require_approved_project(project_id)
+        review = self._require_review(project_id)
+        if review.synthesis is not None:
+            return review
+        synthesis = self._evidence_synthesizer.synthesize(project, review)
+        review = review.with_synthesis(synthesis)
+        self._evidence_store.save(review)
+        return review
+
+    def review_synthesis(
+        self,
+        project_id: UUID,
+        request: EvidenceSynthesisReviewRequest,
+    ) -> EvidenceReview:
+        review = self._require_review(project_id).review_synthesis(request)
         self._evidence_store.save(review)
         return review
 

@@ -12,6 +12,12 @@ from app.adapters.openai_problem_framer import OpenAIProblemFramer
 from app.adapters.openai_responses import OpenAIResponsesGenerator
 from app.adapters.crossref_search import CrossrefLiteratureSearch
 from app.adapters.evidence_planner import OpenAIEvidencePlanner, RuleBasedEvidencePlanner
+from app.adapters.evidence_synthesis import (
+    OpenAIEvidenceAppraiser,
+    OpenAIEvidenceSynthesizer,
+    RuleBasedEvidenceAppraiser,
+    RuleBasedEvidenceSynthesizer,
+)
 from app.adapters.evidence_extractor import (
     OpenAIEvidenceExtractor,
     RuleBasedEvidenceExtractor,
@@ -68,6 +74,16 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         if model_generator is not None
         else RuleBasedEvidenceExtractor()
     )
+    evidence_appraiser = (
+        OpenAIEvidenceAppraiser(model_generator)
+        if model_generator is not None
+        else RuleBasedEvidenceAppraiser()
+    )
+    evidence_synthesizer = (
+        OpenAIEvidenceSynthesizer(model_generator)
+        if model_generator is not None
+        else RuleBasedEvidenceSynthesizer()
+    )
     evidence_workflow = EvidenceWorkflow(
         evidence_planner,
         literature_search,
@@ -76,6 +92,8 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         LocalDocumentStorage(app_settings.document_storage_path),
         PypdfTextExtractor(app_settings.max_pdf_pages),
         evidence_extractor,
+        evidence_appraiser,
+        evidence_synthesizer,
         checkpointer=checkpointer,
         max_upload_bytes=app_settings.max_pdf_upload_mb * 1024 * 1024,
     )
@@ -90,7 +108,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
 
     application = FastAPI(
         title=app_settings.app_name,
-        version="0.4.0",
+        version="0.5.0",
         lifespan=lifespan,
     )
     application.add_middleware(

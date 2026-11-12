@@ -124,6 +124,71 @@ type EvidenceItem = EvidenceItemContent & {
   reviewer_note: string | null;
 };
 
+type ReviewStatus = "pending_review" | "approved" | "needs_revision";
+type AppraisalConcern = "low" | "some_concerns" | "high" | "unclear";
+type AppraisalConfidence = "high" | "moderate" | "low" | "unclear";
+
+type AppraisalJudgment = {
+  concern: AppraisalConcern;
+  rationale: string;
+};
+
+type EvidenceAppraisalContent = {
+  design_appropriateness: AppraisalJudgment;
+  sample_adequacy: AppraisalJudgment;
+  measurement_validity: AppraisalJudgment;
+  analysis_adequacy: AppraisalJudgment;
+  bias_risk: AppraisalJudgment;
+  directness: AppraisalJudgment;
+  overall_confidence: AppraisalConfidence;
+  strengths: string[];
+  concerns: string[];
+};
+
+type EvidenceAppraisal = EvidenceAppraisalContent & {
+  id: string;
+  evidence_item_id: string;
+  status: ReviewStatus;
+  generation: GenerationMetadata;
+  reviewer_note: string | null;
+};
+
+type EvidenceMatrixRow = {
+  evidence_item_id: string;
+  candidate_id: string;
+  citation: string;
+  population_and_context: string;
+  design_and_sample: string;
+  exposures_or_interventions: string[];
+  outcomes_and_measures: string[];
+  findings_and_effects: string[];
+  limitations: string[];
+  appraisal_confidence: AppraisalConfidence;
+};
+
+type SynthesisClaim = {
+  statement: string;
+  evidence_item_ids: string[];
+  confidence: AppraisalConfidence;
+  rationale: string;
+};
+
+type EvidenceSynthesisContent = {
+  matrix: EvidenceMatrixRow[];
+  consistent_findings: SynthesisClaim[];
+  conflicting_findings: SynthesisClaim[];
+  evidence_gaps: string[];
+  transferability_notes: string[];
+  cautions: string[];
+};
+
+type EvidenceSynthesis = EvidenceSynthesisContent & {
+  id: string;
+  status: ReviewStatus;
+  generation: GenerationMetadata;
+  reviewer_note: string | null;
+};
+
 type EvidenceReview = {
   id: string;
   project_id: string;
@@ -132,6 +197,8 @@ type EvidenceReview = {
   candidates: LiteratureCandidate[];
   documents: EvidenceDocument[];
   evidence_items: EvidenceItem[];
+  appraisals: EvidenceAppraisal[];
+  synthesis: EvidenceSynthesis | null;
 };
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -308,6 +375,51 @@ export default function Home() {
     );
   }
 
+  async function appraiseEvidenceItem(itemId: string) {
+    if (!project) return;
+    await requestEvidence(
+      `/api/projects/${project.id}/evidence/evidence-items/${itemId}/appraisal`,
+      { method: "POST" },
+    );
+  }
+
+  async function reviewAppraisal(
+    appraisalId: string,
+    content: EvidenceAppraisalContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) {
+    if (!project) return;
+    await requestEvidence(
+      `/api/projects/${project.id}/evidence/appraisals/${appraisalId}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, status, note: note.trim() || null }),
+      },
+    );
+  }
+
+  async function generateSynthesis() {
+    if (!project) return;
+    await requestEvidence(`/api/projects/${project.id}/evidence/synthesis`, {
+      method: "POST",
+    });
+  }
+
+  async function reviewSynthesis(
+    content: EvidenceSynthesisContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) {
+    if (!project) return;
+    await requestEvidence(`/api/projects/${project.id}/evidence/synthesis`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, status, note: note.trim() || null }),
+    });
+  }
+
   return (
     <main>
       <header className="hero">
@@ -318,7 +430,7 @@ export default function Home() {
         </div>
         <div className="status-card">
           <span className="status-dot" />
-          智能问题界定工作流
+          证据驱动研究工作流
         </div>
       </header>
 
@@ -374,7 +486,7 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <span className="section-kicker">Agent 产物</span>
-              <h2>{resultTitle(project?.stage, evidence?.stage)}</h2>
+              <h2>{evidence?.synthesis ? "证据矩阵与综合" : resultTitle(project?.stage, evidence?.stage)}</h2>
             </div>
             {project && (
               <span className={`badge ${project.stage}`}>
@@ -469,10 +581,16 @@ export default function Home() {
               candidates={evidence.candidates}
               documents={evidence.documents}
               evidenceItems={evidence.evidence_items}
+              appraisals={evidence.appraisals}
+              synthesis={evidence.synthesis}
               loading={loading}
               onScreen={screenCandidate}
               onUpload={uploadEvidenceDocument}
               onReview={reviewEvidenceItem}
+              onAppraise={appraiseEvidenceItem}
+              onReviewAppraisal={reviewAppraisal}
+              onGenerateSynthesis={generateSynthesis}
+              onReviewSynthesis={reviewSynthesis}
             />
           )}
 
@@ -777,14 +895,22 @@ function LiteratureScreening({
   candidates,
   documents,
   evidenceItems,
+  appraisals,
+  synthesis,
   loading,
   onScreen,
   onUpload,
   onReview,
+  onAppraise,
+  onReviewAppraisal,
+  onGenerateSynthesis,
+  onReviewSynthesis,
 }: {
   candidates: LiteratureCandidate[];
   documents: EvidenceDocument[];
   evidenceItems: EvidenceItem[];
+  appraisals: EvidenceAppraisal[];
+  synthesis: EvidenceSynthesis | null;
   loading: boolean;
   onScreen: (
     candidateId: string,
@@ -798,9 +924,28 @@ function LiteratureScreening({
     status: "approved" | "needs_revision",
     note: string,
   ) => void;
+  onAppraise: (itemId: string) => void;
+  onReviewAppraisal: (
+    appraisalId: string,
+    content: EvidenceAppraisalContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+  onGenerateSynthesis: () => void;
+  onReviewSynthesis: (
+    content: EvidenceSynthesisContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
 }) {
   const included = candidates.filter((item) => item.screening_status === "included").length;
   const excluded = candidates.filter((item) => item.screening_status === "excluded").length;
+  const approvedItems = evidenceItems.filter((item) => item.status === "approved");
+  const readyForSynthesis = approvedItems.length > 0 && approvedItems.every((item) =>
+    appraisals.some(
+      (appraisal) => appraisal.evidence_item_id === item.id && appraisal.status === "approved",
+    ),
+  );
   return (
     <div className="screening-board">
       <div className="screening-summary">
@@ -820,14 +965,39 @@ function LiteratureScreening({
             candidate={candidate}
             document={documents.find((item) => item.candidate_id === candidate.id)}
             evidenceItem={evidenceItems.find((item) => item.candidate_id === candidate.id)}
+            appraisal={appraisals.find((item) =>
+              item.evidence_item_id === evidenceItems.find(
+                (evidenceItem) => evidenceItem.candidate_id === candidate.id,
+              )?.id
+            )}
             loading={loading}
             onScreen={onScreen}
             onUpload={onUpload}
             onReview={onReview}
+            onAppraise={onAppraise}
+            onReviewAppraisal={onReviewAppraisal}
             key={candidate.id}
           />
         ))}
       </div>
+      {readyForSynthesis && !synthesis && (
+        <div className="synthesis-entry">
+          <div>
+            <strong>所有可用证据均已完成质量评价</strong>
+            <p>现在可以建立跨文献矩阵并生成待审核的叙述性综合。</p>
+          </div>
+          <button disabled={loading} onClick={onGenerateSynthesis}>
+            生成证据矩阵与综合
+          </button>
+        </div>
+      )}
+      {synthesis && (
+        <EvidenceSynthesisEditor
+          synthesis={synthesis}
+          loading={loading}
+          onReview={onReviewSynthesis}
+        />
+      )}
     </div>
   );
 }
@@ -836,14 +1006,18 @@ function CandidateCard({
   candidate,
   document,
   evidenceItem,
+  appraisal,
   loading,
   onScreen,
   onUpload,
   onReview,
+  onAppraise,
+  onReviewAppraisal,
 }: {
   candidate: LiteratureCandidate;
   document?: EvidenceDocument;
   evidenceItem?: EvidenceItem;
+  appraisal?: EvidenceAppraisal;
   loading: boolean;
   onScreen: (
     candidateId: string,
@@ -854,6 +1028,13 @@ function CandidateCard({
   onReview: (
     itemId: string,
     content: EvidenceItemContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+  onAppraise: (itemId: string) => void;
+  onReviewAppraisal: (
+    appraisalId: string,
+    content: EvidenceAppraisalContent,
     status: "approved" | "needs_revision",
     note: string,
   ) => void;
@@ -922,6 +1103,24 @@ function CandidateCard({
           item={evidenceItem}
           loading={loading}
           onReview={onReview}
+        />
+      )}
+      {evidenceItem?.status === "approved" && !appraisal && (
+        <div className="appraisal-entry">
+          <div>
+            <strong>下一步：研究质量评价</strong>
+            <small>生成评价草案后，需要人工判断设计、样本、测量和偏倚风险。</small>
+          </div>
+          <button disabled={loading} onClick={() => onAppraise(evidenceItem.id)}>
+            生成评价草案
+          </button>
+        </div>
+      )}
+      {appraisal && (
+        <EvidenceAppraisalEditor
+          appraisal={appraisal}
+          loading={loading}
+          onReview={onReviewAppraisal}
         />
       )}
     </article>
@@ -1075,6 +1274,363 @@ function EvidenceItemEditor({
       </div>
     </div>
   );
+}
+
+function EvidenceAppraisalEditor({
+  appraisal,
+  loading,
+  onReview,
+}: {
+  appraisal: EvidenceAppraisal;
+  loading: boolean;
+  onReview: (
+    appraisalId: string,
+    content: EvidenceAppraisalContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+}) {
+  const [content, setContent] = useState<EvidenceAppraisalContent>({
+    design_appropriateness: appraisal.design_appropriateness,
+    sample_adequacy: appraisal.sample_adequacy,
+    measurement_validity: appraisal.measurement_validity,
+    analysis_adequacy: appraisal.analysis_adequacy,
+    bias_risk: appraisal.bias_risk,
+    directness: appraisal.directness,
+    overall_confidence: appraisal.overall_confidence,
+    strengths: appraisal.strengths,
+    concerns: appraisal.concerns,
+  });
+  const [note, setNote] = useState(appraisal.reviewer_note ?? "");
+  const domains = [
+    ["design_appropriateness", "研究设计适切性"],
+    ["sample_adequacy", "样本充分性"],
+    ["measurement_validity", "测量有效性"],
+    ["analysis_adequacy", "统计分析适切性"],
+    ["bias_risk", "偏倚风险"],
+    ["directness", "对当前问题的直接性"],
+  ] as const;
+
+  function updateJudgment(
+    field: typeof domains[number][0],
+    patch: Partial<AppraisalJudgment>,
+  ) {
+    setContent((current) => ({
+      ...current,
+      [field]: { ...current[field], ...patch },
+    }));
+  }
+
+  return (
+    <div className="appraisal-editor">
+      <div className="evidence-item-heading">
+        <div>
+          <strong>研究质量评价</strong>
+          <small>辅助评价草案，不等同于正式 GRADE 或 RoB 2 评价</small>
+        </div>
+        <span className={`evidence-status ${appraisal.status}`}>
+          {reviewStatusLabel(appraisal.status)}
+        </span>
+      </div>
+      <div className="appraisal-domains">
+        {domains.map(([field, label]) => (
+          <div className="appraisal-domain" key={field}>
+            <label>
+              {label}
+              <select
+                value={content[field].concern}
+                onChange={(event) => updateJudgment(field, {
+                  concern: event.target.value as AppraisalConcern,
+                })}
+              >
+                <option value="low">低关注</option>
+                <option value="some_concerns">存在一些关注</option>
+                <option value="high">高关注</option>
+                <option value="unclear">信息不足</option>
+              </select>
+            </label>
+            <textarea
+              rows={2}
+              value={content[field].rationale}
+              onChange={(event) => updateJudgment(field, { rationale: event.target.value })}
+            />
+          </div>
+        ))}
+      </div>
+      <label>
+        单篇研究总体可信度
+        <select
+          value={content.overall_confidence}
+          onChange={(event) => setContent((current) => ({
+            ...current,
+            overall_confidence: event.target.value as AppraisalConfidence,
+          }))}
+        >
+          <option value="high">高</option>
+          <option value="moderate">中等</option>
+          <option value="low">低</option>
+          <option value="unclear">信息不足</option>
+        </select>
+      </label>
+      {(["strengths", "concerns"] as const).map((field) => (
+        <label key={field}>
+          {field === "strengths" ? "主要优势" : "主要关注"} <small>每行一项</small>
+          <textarea
+            rows={3}
+            value={content[field].join("\n")}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              [field]: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
+            }))}
+          />
+        </label>
+      ))}
+      <label>
+        评价复核备注
+        <textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} />
+      </label>
+      <div className="evidence-review-actions">
+        <button
+          disabled={loading || note.trim().length < 3}
+          onClick={() => onReview(appraisal.id, content, "needs_revision", note)}
+        >
+          标记需修订
+        </button>
+        <button
+          className="approve-evidence"
+          disabled={loading}
+          onClick={() => onReview(appraisal.id, content, "approved", note)}
+        >
+          批准质量评价
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EvidenceSynthesisEditor({
+  synthesis,
+  loading,
+  onReview,
+}: {
+  synthesis: EvidenceSynthesis;
+  loading: boolean;
+  onReview: (
+    content: EvidenceSynthesisContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+}) {
+  const [content, setContent] = useState<EvidenceSynthesisContent>({
+    matrix: synthesis.matrix,
+    consistent_findings: synthesis.consistent_findings,
+    conflicting_findings: synthesis.conflicting_findings,
+    evidence_gaps: synthesis.evidence_gaps,
+    transferability_notes: synthesis.transferability_notes,
+    cautions: synthesis.cautions,
+  });
+  const [note, setNote] = useState(synthesis.reviewer_note ?? "");
+
+  function updateClaim(
+    group: "consistent_findings" | "conflicting_findings",
+    index: number,
+    patch: Partial<SynthesisClaim>,
+  ) {
+    setContent((current) => ({
+      ...current,
+      [group]: current[group].map((claim, claimIndex) =>
+        claimIndex === index ? { ...claim, ...patch } : claim
+      ),
+    }));
+  }
+
+  function addClaim(group: "consistent_findings" | "conflicting_findings") {
+    if (content.matrix.length < 2) return;
+    setContent((current) => ({
+      ...current,
+      [group]: [
+        ...current[group],
+        {
+          statement: "",
+          evidence_item_ids: current.matrix.slice(0, 2).map((row) => row.evidence_item_id),
+          confidence: "unclear" as const,
+          rationale: "",
+        },
+      ],
+    }));
+  }
+
+  function removeClaim(
+    group: "consistent_findings" | "conflicting_findings",
+    index: number,
+  ) {
+    setContent((current) => ({
+      ...current,
+      [group]: current[group].filter((_, claimIndex) => claimIndex !== index),
+    }));
+  }
+
+  const claimsValid = [
+    ...content.consistent_findings,
+    ...content.conflicting_findings,
+  ].every((claim) =>
+    claim.statement.trim().length >= 3
+    && claim.rationale.trim().length >= 3
+    && new Set(claim.evidence_item_ids).size >= 2
+  );
+
+  return (
+    <section className="synthesis-editor">
+      <div className="evidence-item-heading">
+        <div>
+          <span className="section-kicker">跨文献综合</span>
+          <h3>证据矩阵与综合判断</h3>
+        </div>
+        <span className={`evidence-status ${synthesis.status}`}>
+          {reviewStatusLabel(synthesis.status)}
+        </span>
+      </div>
+      <div className="matrix-scroll">
+        <table className="evidence-matrix">
+          <thead>
+            <tr>
+              <th>文献</th>
+              <th>人群与场景</th>
+              <th>设计与样本</th>
+              <th>变量/干预</th>
+              <th>结果与测量</th>
+              <th>发现与效应量</th>
+              <th>可信度</th>
+            </tr>
+          </thead>
+          <tbody>
+            {content.matrix.map((row) => (
+              <tr key={row.evidence_item_id}>
+                <td>{row.citation}</td>
+                <td>{row.population_and_context}</td>
+                <td>{row.design_and_sample}</td>
+                <td>{row.exposures_or_interventions.join("；") || "未报告"}</td>
+                <td>{row.outcomes_and_measures.join("；") || "未报告"}</td>
+                <td>{row.findings_and_effects.join("；") || "未报告"}</td>
+                <td>{confidenceLabel(row.appraisal_confidence)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {(["consistent_findings", "conflicting_findings"] as const).map((group) => (
+        <div className="synthesis-claims" key={group}>
+          <div className="synthesis-claim-heading">
+            <strong>{group === "consistent_findings" ? "一致发现" : "冲突发现"}</strong>
+            <button
+              disabled={content.matrix.length < 2}
+              onClick={() => addClaim(group)}
+            >
+              添加结论
+            </button>
+          </div>
+          {content[group].length === 0 && <small>当前没有形成该类跨研究结论。</small>}
+          {content[group].map((claim, index) => (
+            <div className="synthesis-claim" key={`${group}-${index}`}>
+              <textarea
+                rows={2}
+                value={claim.statement}
+                onChange={(event) => updateClaim(group, index, { statement: event.target.value })}
+              />
+              <textarea
+                rows={2}
+                value={claim.rationale}
+                onChange={(event) => updateClaim(group, index, { rationale: event.target.value })}
+              />
+              <select
+                value={claim.confidence}
+                onChange={(event) => updateClaim(group, index, {
+                  confidence: event.target.value as AppraisalConfidence,
+                })}
+              >
+                <option value="high">高可信度</option>
+                <option value="moderate">中等可信度</option>
+                <option value="low">低可信度</option>
+                <option value="unclear">信息不足</option>
+              </select>
+              <button className="remove-claim" onClick={() => removeClaim(group, index)}>
+                删除
+              </button>
+              <div className="claim-references">
+                <span>支持该结论的证据（至少两项）</span>
+                {content.matrix.map((row) => {
+                  const checked = claim.evidence_item_ids.includes(row.evidence_item_id);
+                  return (
+                    <label key={row.evidence_item_id}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => updateClaim(group, index, {
+                          evidence_item_ids: checked
+                            ? claim.evidence_item_ids.filter((id) => id !== row.evidence_item_id)
+                            : [...claim.evidence_item_ids, row.evidence_item_id],
+                        })}
+                      />
+                      {row.citation}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+      {([
+        ["evidence_gaps", "证据缺口"],
+        ["transferability_notes", "适用性与迁移说明"],
+        ["cautions", "使用警示"],
+      ] as const).map(([field, label]) => (
+        <label key={field}>
+          {label} <small>每行一项</small>
+          <textarea
+            rows={4}
+            value={content[field].join("\n")}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              [field]: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
+            }))}
+          />
+        </label>
+      ))}
+      <label>
+        综合复核备注
+        <textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} />
+      </label>
+      <div className="evidence-review-actions">
+        <button
+          disabled={loading || note.trim().length < 3}
+          onClick={() => onReview(content, "needs_revision", note)}
+        >
+          标记需修订
+        </button>
+        <button
+          className="approve-evidence"
+          disabled={loading || !claimsValid}
+          onClick={() => onReview(content, "approved", note)}
+        >
+          批准证据综合
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function reviewStatusLabel(status: ReviewStatus) {
+  return status === "approved" ? "已批准" : status === "needs_revision" ? "需修订" : "待复核";
+}
+
+function confidenceLabel(confidence: AppraisalConfidence) {
+  return {
+    high: "高",
+    moderate: "中等",
+    low: "低",
+    unclear: "信息不足",
+  }[confidence];
 }
 
 function ArtifactList({

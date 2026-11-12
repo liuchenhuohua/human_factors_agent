@@ -4,16 +4,20 @@ from uuid import UUID
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.domain.evidence import (
+    EvidenceAppraisalReviewRequest,
     EvidenceItemReviewRequest,
     EvidenceReview,
+    EvidenceSynthesisReviewRequest,
     ScreeningRequest,
     SearchPlanContent,
 )
 from app.domain.evidence_ports import (
     DocumentParsingError,
     DocumentValidationError,
+    EvidenceAppraisalError,
     EvidenceExtractionError,
     EvidencePlanningError,
+    EvidenceSynthesisError,
     LiteratureSearchError,
 )
 from app.workflows.evidence_workflow import EvidenceWorkflow
@@ -113,5 +117,62 @@ def create_evidence_router(workflow: EvidenceWorkflow) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except (DocumentValidationError, DocumentParsingError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.post(
+        "/projects/{project_id}/evidence/evidence-items/{item_id}/appraisal",
+        response_model=EvidenceReview,
+    )
+    def appraise_evidence_item(project_id: UUID, item_id: UUID) -> EvidenceReview:
+        try:
+            return workflow.appraise_evidence_item(project_id, item_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except EvidenceAppraisalError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @router.put(
+        "/projects/{project_id}/evidence/appraisals/{appraisal_id}",
+        response_model=EvidenceReview,
+    )
+    def review_appraisal(
+        project_id: UUID,
+        appraisal_id: UUID,
+        request: EvidenceAppraisalReviewRequest,
+    ) -> EvidenceReview:
+        try:
+            return workflow.review_appraisal(project_id, appraisal_id, request)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @router.post(
+        "/projects/{project_id}/evidence/synthesis",
+        response_model=EvidenceReview,
+    )
+    def generate_synthesis(project_id: UUID) -> EvidenceReview:
+        try:
+            return workflow.generate_synthesis(project_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except EvidenceSynthesisError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @router.put(
+        "/projects/{project_id}/evidence/synthesis",
+        response_model=EvidenceReview,
+    )
+    def review_synthesis(
+        project_id: UUID,
+        request: EvidenceSynthesisReviewRequest,
+    ) -> EvidenceReview:
+        try:
+            return workflow.review_synthesis(project_id, request)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
     return router

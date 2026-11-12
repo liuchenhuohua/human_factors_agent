@@ -5,15 +5,24 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.adapters.evidence_extractor import RuleBasedEvidenceExtractor
+from app.adapters.evidence_synthesis import (
+    RuleBasedEvidenceAppraiser,
+    RuleBasedEvidenceSynthesizer,
+)
 from app.adapters.evidence_planner import RuleBasedEvidencePlanner
 from app.adapters.problem_framer import RuleBasedProblemFramer
 from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
 from app.domain.evidence import (
     EvidenceDocument,
+    AppraisalConfidence,
+    EvidenceAppraisalContent,
+    EvidenceAppraisalReviewRequest,
     EvidenceItemContent,
     EvidenceItemReviewRequest,
     EvidenceItemStatus,
+    EvidenceSynthesisContent,
+    EvidenceSynthesisReviewRequest,
     EvidenceStage,
     LiteratureCandidate,
     ParsedDocument,
@@ -21,6 +30,8 @@ from app.domain.evidence import (
     ScreeningRequest,
     ScreeningStatus,
     SourceExcerpt,
+    SynthesisClaim,
+    ReviewStatus,
 )
 from app.domain.evidence_ports import DocumentValidationError
 from app.domain.project import ProjectIntake
@@ -134,6 +145,8 @@ def test_evidence_workflow_plans_searches_and_screens(
         FakeDocumentStorage(),
         FakePdfTextExtractor(),
         RuleBasedEvidenceExtractor(),
+        RuleBasedEvidenceAppraiser(),
+        RuleBasedEvidenceSynthesizer(),
     )
 
     review = workflow.start(project.id)
@@ -214,3 +227,57 @@ def test_evidence_workflow_plans_searches_and_screens(
     )
     assert review.evidence_items[0].status is EvidenceItemStatus.APPROVED
     assert review.evidence_items[0].generation.generator == "human"
+
+    review = workflow.appraise_evidence_item(project.id, draft.id)
+    appraisal = review.appraisals[0]
+    assert appraisal.status is ReviewStatus.PENDING_REVIEW
+    appraisal_content = EvidenceAppraisalContent.model_validate(
+        appraisal.model_dump(include=set(EvidenceAppraisalContent.model_fields))
+    )
+    review = workflow.review_appraisal(
+        project.id,
+        appraisal.id,
+        EvidenceAppraisalReviewRequest(
+            content=appraisal_content,
+            status=ReviewStatus.APPROVED,
+            note="已核验研究设计与偏倚风险",
+        ),
+    )
+    assert review.appraisals[0].status is ReviewStatus.APPROVED
+
+    review = workflow.generate_synthesis(project.id)
+    assert review.synthesis is not None
+    assert len(review.synthesis.matrix) == 1
+    synthesis_content = EvidenceSynthesisContent.model_validate(
+        review.synthesis.model_dump(include=set(EvidenceSynthesisContent.model_fields))
+    )
+    invalid_synthesis = synthesis_content.model_copy(
+        update={
+            "consistent_findings": [
+                SynthesisClaim(
+                    statement="单篇研究被错误标记为跨研究一致结论",
+                    evidence_item_ids=[draft.id],
+                    confidence=AppraisalConfidence.LOW,
+                    rationale="用于验证跨研究引用约束",
+                )
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="at least two evidence items"):
+        workflow.review_synthesis(
+            project.id,
+            EvidenceSynthesisReviewRequest(
+                content=invalid_synthesis,
+                status=ReviewStatus.APPROVED,
+            ),
+        )
+    review = workflow.review_synthesis(
+        project.id,
+        EvidenceSynthesisReviewRequest(
+            content=synthesis_content,
+            status=ReviewStatus.APPROVED,
+            note="已核对矩阵、证据缺口与适用范围",
+        ),
+    )
+    assert review.synthesis is not None
+    assert review.synthesis.status is ReviewStatus.APPROVED

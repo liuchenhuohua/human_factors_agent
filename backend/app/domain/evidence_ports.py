@@ -3,8 +3,10 @@ from uuid import UUID
 
 from app.domain.evidence import (
     EvidenceDocument,
+    EvidenceAppraisal,
     EvidenceItem,
     EvidenceReview,
+    EvidenceSynthesis,
     LiteratureCandidate,
     ParsedDocument,
     SearchPlan,
@@ -30,6 +32,14 @@ class DocumentParsingError(RuntimeError):
 
 
 class EvidenceExtractionError(RuntimeError):
+    pass
+
+
+class EvidenceAppraisalError(RuntimeError):
+    pass
+
+
+class EvidenceSynthesisError(RuntimeError):
     pass
 
 
@@ -68,6 +78,23 @@ class EvidenceExtractor(Protocol):
         document: EvidenceDocument,
         parsed: ParsedDocument,
     ) -> EvidenceItem: ...
+
+
+class EvidenceAppraiser(Protocol):
+    def appraise(
+        self,
+        project: Project,
+        candidate: LiteratureCandidate,
+        item: EvidenceItem,
+    ) -> EvidenceAppraisal: ...
+
+
+class EvidenceSynthesizer(Protocol):
+    def synthesize(
+        self,
+        project: Project,
+        review: EvidenceReview,
+    ) -> EvidenceSynthesis: ...
 
 
 class EvidenceStore(Protocol):

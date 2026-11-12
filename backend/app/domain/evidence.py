@@ -146,6 +146,127 @@ class EvidenceItemReviewRequest(BaseModel):
         return self
 
 
+class AppraisalConcern(StrEnum):
+    LOW = "low"
+    SOME_CONCERNS = "some_concerns"
+    HIGH = "high"
+    UNCLEAR = "unclear"
+
+
+class AppraisalConfidence(StrEnum):
+    HIGH = "high"
+    MODERATE = "moderate"
+    LOW = "low"
+    UNCLEAR = "unclear"
+
+
+class AppraisalJudgment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    concern: AppraisalConcern
+    rationale: str = Field(min_length=3, max_length=1500)
+
+
+class EvidenceAppraisalContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    design_appropriateness: AppraisalJudgment
+    sample_adequacy: AppraisalJudgment
+    measurement_validity: AppraisalJudgment
+    analysis_adequacy: AppraisalJudgment
+    bias_risk: AppraisalJudgment
+    directness: AppraisalJudgment
+    overall_confidence: AppraisalConfidence
+    strengths: list[str] = Field(max_length=12)
+    concerns: list[str] = Field(max_length=12)
+
+
+class ReviewStatus(StrEnum):
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    NEEDS_REVISION = "needs_revision"
+
+
+class EvidenceAppraisal(EvidenceAppraisalContent):
+    id: UUID = Field(default_factory=uuid4)
+    evidence_item_id: UUID
+    status: ReviewStatus = ReviewStatus.PENDING_REVIEW
+    generation: GenerationMetadata
+    reviewer_note: str | None = None
+    reviewed_at: datetime | None = None
+
+
+class EvidenceAppraisalReviewRequest(BaseModel):
+    content: EvidenceAppraisalContent
+    status: ReviewStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_review(self) -> "EvidenceAppraisalReviewRequest":
+        if self.status is ReviewStatus.PENDING_REVIEW:
+            raise ValueError("An appraisal review must approve or request revision")
+        if self.status is ReviewStatus.NEEDS_REVISION and not self.note:
+            raise ValueError("A revision request requires a note")
+        return self
+
+
+class EvidenceMatrixRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_item_id: UUID
+    candidate_id: UUID
+    citation: str
+    population_and_context: str
+    design_and_sample: str
+    exposures_or_interventions: list[str]
+    outcomes_and_measures: list[str]
+    findings_and_effects: list[str]
+    limitations: list[str]
+    appraisal_confidence: AppraisalConfidence
+
+
+class SynthesisClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=3, max_length=3000)
+    evidence_item_ids: list[UUID] = Field(min_length=1)
+    confidence: AppraisalConfidence
+    rationale: str = Field(min_length=3, max_length=2000)
+
+
+class EvidenceSynthesisContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matrix: list[EvidenceMatrixRow] = Field(min_length=1)
+    consistent_findings: list[SynthesisClaim]
+    conflicting_findings: list[SynthesisClaim]
+    evidence_gaps: list[str]
+    transferability_notes: list[str]
+    cautions: list[str]
+
+
+class EvidenceSynthesis(EvidenceSynthesisContent):
+    id: UUID = Field(default_factory=uuid4)
+    status: ReviewStatus = ReviewStatus.PENDING_REVIEW
+    generation: GenerationMetadata
+    reviewer_note: str | None = None
+    reviewed_at: datetime | None = None
+
+
+class EvidenceSynthesisReviewRequest(BaseModel):
+    content: EvidenceSynthesisContent
+    status: ReviewStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_review(self) -> "EvidenceSynthesisReviewRequest":
+        if self.status is ReviewStatus.PENDING_REVIEW:
+            raise ValueError("A synthesis review must approve or request revision")
+        if self.status is ReviewStatus.NEEDS_REVISION and not self.note:
+            raise ValueError("A revision request requires a note")
+        return self
+
+
 class ScreeningRequest(BaseModel):
     status: ScreeningStatus
     reason: str = Field(min_length=3, max_length=1000)
@@ -171,6 +292,8 @@ class EvidenceReview(BaseModel):
     candidates: list[LiteratureCandidate] = Field(default_factory=list)
     documents: list[EvidenceDocument] = Field(default_factory=list)
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
+    appraisals: list[EvidenceAppraisal] = Field(default_factory=list)
+    synthesis: EvidenceSynthesis | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -279,5 +402,137 @@ class EvidenceReview(BaseModel):
         if not found:
             raise KeyError(f"Evidence item {item_id} not found")
         return self.model_copy(
-            update={"evidence_items": updated_items, "updated_at": utc_now()}
+            update={
+                "evidence_items": updated_items,
+                "appraisals": [
+                    appraisal
+                    for appraisal in self.appraisals
+                    if appraisal.evidence_item_id != item_id
+                ],
+                "synthesis": None,
+                "updated_at": utc_now(),
+            }
         )
+
+    def with_appraisal(self, appraisal: EvidenceAppraisal) -> "EvidenceReview":
+        item = next(
+            (item for item in self.evidence_items if item.id == appraisal.evidence_item_id),
+            None,
+        )
+        if item is None:
+            raise KeyError(f"Evidence item {appraisal.evidence_item_id} not found")
+        if item.status is not EvidenceItemStatus.APPROVED:
+            raise ValueError("Only approved evidence items can be appraised")
+        if any(
+            existing.evidence_item_id == appraisal.evidence_item_id
+            for existing in self.appraisals
+        ):
+            raise ValueError("This evidence item already has an appraisal")
+        return self.model_copy(
+            update={
+                "appraisals": [*self.appraisals, appraisal],
+                "synthesis": None,
+                "updated_at": utc_now(),
+            }
+        )
+
+    def review_appraisal(
+        self,
+        appraisal_id: UUID,
+        request: EvidenceAppraisalReviewRequest,
+    ) -> "EvidenceReview":
+        found = False
+        updated: list[EvidenceAppraisal] = []
+        for appraisal in self.appraisals:
+            if appraisal.id == appraisal_id:
+                found = True
+                appraisal = EvidenceAppraisal(
+                    **request.content.model_dump(),
+                    id=appraisal.id,
+                    evidence_item_id=appraisal.evidence_item_id,
+                    status=request.status,
+                    generation=GenerationMetadata(
+                        generator="human",
+                        model=None,
+                        prompt_version="manual-appraisal-review",
+                    ),
+                    reviewer_note=request.note,
+                    reviewed_at=utc_now(),
+                )
+            updated.append(appraisal)
+        if not found:
+            raise KeyError(f"Evidence appraisal {appraisal_id} not found")
+        return self.model_copy(
+            update={"appraisals": updated, "synthesis": None, "updated_at": utc_now()}
+        )
+
+    def approved_evidence_with_appraisals(
+        self,
+    ) -> list[tuple[EvidenceItem, EvidenceAppraisal]]:
+        approved_items = [
+            item for item in self.evidence_items if item.status is EvidenceItemStatus.APPROVED
+        ]
+        if not approved_items:
+            raise ValueError("At least one approved evidence item is required")
+        appraisal_by_item = {
+            appraisal.evidence_item_id: appraisal
+            for appraisal in self.appraisals
+            if appraisal.status is ReviewStatus.APPROVED
+        }
+        missing = [item.id for item in approved_items if item.id not in appraisal_by_item]
+        if missing:
+            raise ValueError("Every approved evidence item needs an approved appraisal")
+        return [(item, appraisal_by_item[item.id]) for item in approved_items]
+
+    def with_synthesis(self, synthesis: EvidenceSynthesis) -> "EvidenceReview":
+        self._validate_synthesis_content(synthesis)
+        return self.model_copy(
+            update={"synthesis": synthesis, "updated_at": utc_now()}
+        )
+
+    def review_synthesis(
+        self,
+        request: EvidenceSynthesisReviewRequest,
+    ) -> "EvidenceReview":
+        if self.synthesis is None:
+            raise KeyError("Evidence synthesis not found")
+        self._validate_synthesis_content(request.content)
+        synthesis = EvidenceSynthesis(
+            **request.content.model_dump(),
+            id=self.synthesis.id,
+            status=request.status,
+            generation=GenerationMetadata(
+                generator="human",
+                model=None,
+                prompt_version="manual-synthesis-review",
+            ),
+            reviewer_note=request.note,
+            reviewed_at=utc_now(),
+        )
+        return self.model_copy(update={"synthesis": synthesis, "updated_at": utc_now()})
+
+    def _validate_synthesis_content(
+        self,
+        content: EvidenceSynthesisContent,
+    ) -> None:
+        pairs = self.approved_evidence_with_appraisals()
+        items = {item.id: item for item, _ in pairs}
+        matrix_ids = [row.evidence_item_id for row in content.matrix]
+        if len(matrix_ids) != len(set(matrix_ids)) or set(matrix_ids) != set(items):
+            raise ValueError(
+                "The evidence matrix must contain each approved evidence item exactly once"
+            )
+        for row in content.matrix:
+            if row.candidate_id != items[row.evidence_item_id].candidate_id:
+                raise ValueError("A matrix row does not match its evidence item")
+        for claim in [
+            *content.consistent_findings,
+            *content.conflicting_findings,
+        ]:
+            referenced = set(claim.evidence_item_ids)
+            if not referenced.issubset(items):
+                raise ValueError("A synthesis claim references unapproved evidence")
+            if len(referenced) < 2:
+                raise ValueError(
+                    "A cross-study synthesis claim requires at least two evidence items"
+                )
