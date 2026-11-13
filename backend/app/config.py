@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     document_storage_path: Path = Path("data/uploads")
     max_pdf_upload_mb: int = 25
     max_pdf_pages: int = 250
+    dataset_storage_path: Path = Path("data/datasets")
+    max_csv_upload_mb: int = 20
 
     model_config = SettingsConfigDict(env_prefix="HFA_", env_file=".env")
 

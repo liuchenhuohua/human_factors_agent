@@ -361,6 +361,61 @@ type StudyPreparation = {
   data_contract: DataContract | null;
 };
 
+type DatasetStatus =
+  | "validation_failed"
+  | "pending_review"
+  | "analysis_ready"
+  | "needs_revision"
+  | "stale";
+
+type QualityIssue = {
+  code: string;
+  severity: "error" | "warning";
+  message: string;
+  field_key: string | null;
+  occurrence_count: number;
+  row_numbers: number[];
+};
+
+type FieldQualitySummary = {
+  field_key: string;
+  missing_count: number;
+  missing_rate: number;
+  invalid_count: number;
+  distinct_count: number;
+};
+
+type DataQualityReport = {
+  row_count: number;
+  column_count: number;
+  error_count: number;
+  warning_count: number;
+  duplicate_primary_key_count: number;
+  valid_for_analysis: boolean;
+  issues: QualityIssue[];
+  field_summaries: FieldQualitySummary[];
+  validated_at: string;
+  validator_version: string;
+};
+
+type DatasetVersion = {
+  id: string;
+  version: number;
+  filename: string;
+  byte_size: number;
+  sha256: string;
+  status: DatasetStatus;
+  quality_report: DataQualityReport;
+  reviewer_note: string | null;
+  created_at: string;
+};
+
+type DatasetRegistry = {
+  project_id: string;
+  datasets: DatasetVersion[];
+  active_dataset_id: string | null;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function Home() {
@@ -368,6 +423,7 @@ export default function Home() {
   const [evidence, setEvidence] = useState<EvidenceReview | null>(null);
   const [experimentPlan, setExperimentPlan] = useState<ExperimentPlan | null>(null);
   const [preparation, setPreparation] = useState<StudyPreparation | null>(null);
+  const [datasetRegistry, setDatasetRegistry] = useState<DatasetRegistry | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [revisionFeedback, setRevisionFeedback] = useState("");
   const [editing, setEditing] = useState(false);
@@ -406,6 +462,7 @@ export default function Home() {
     setEvidence(null);
     setExperimentPlan(null);
     setPreparation(null);
+    setDatasetRegistry(null);
     await requestProject("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -682,7 +739,7 @@ export default function Home() {
     note: string,
   ) {
     if (!project) return;
-    await requestPreparation(
+    const updated = await requestPreparation(
       `/api/projects/${project.id}/study-preparation/data-contract`,
       {
         method: "PUT",
@@ -690,6 +747,9 @@ export default function Home() {
         body: JSON.stringify({ content, status, note: note.trim() || null }),
       },
     );
+    if (updated && datasetRegistry) {
+      await requestDatasets(`/api/projects/${project.id}/datasets`);
+    }
   }
 
   async function downloadDataTemplate() {
@@ -718,6 +778,75 @@ export default function Home() {
     }
   }
 
+  async function requestDatasets(path: string, init?: RequestInit) {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBase}${path}`, init);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? "数据集请求失败。");
+      }
+      const updated: DatasetRegistry = await response.json();
+      setDatasetRegistry(updated);
+      return updated;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "发生未知错误");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function uploadDataset(file: File) {
+    if (!project) return;
+    const body = new FormData();
+    body.append("file", file);
+    await requestDatasets(`/api/projects/${project.id}/datasets`, {
+      method: "POST",
+      body,
+    });
+  }
+
+  async function reviewDataset(
+    datasetId: string,
+    status: "analysis_ready" | "needs_revision",
+    note: string,
+  ) {
+    if (!project) return;
+    await requestDatasets(`/api/projects/${project.id}/datasets/${datasetId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, note: note.trim() || null }),
+    });
+  }
+
+  async function downloadDatasetSource(dataset: DatasetVersion) {
+    if (!project) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiBase}/api/projects/${project.id}/datasets/${dataset.id}/source.csv`,
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? "原始数据下载失败。");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `dataset-v${dataset.version}-${dataset.id}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "发生未知错误");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main>
       <header className="hero">
@@ -736,6 +865,7 @@ export default function Home() {
         stage={project?.stage ?? "intake"}
         evidence={evidence}
         experimentPlan={experimentPlan}
+        datasetRegistry={datasetRegistry}
       />
 
       <div className="workspace">
@@ -789,7 +919,9 @@ export default function Home() {
             <div>
               <span className="section-kicker">Agent 产物</span>
               <h2>
-                {preparation
+                {datasetRegistry
+                  ? "数据质量与版本"
+                  : preparation
                   ? "功效分析与数据契约"
                   : experimentPlan
                   ? "实验设计方案"
@@ -939,6 +1071,16 @@ export default function Home() {
             />
           )}
 
+          {preparation?.data_contract?.status === "approved" && (
+            <DatasetPanel
+              registry={datasetRegistry}
+              loading={loading}
+              onUpload={uploadDataset}
+              onReview={reviewDataset}
+              onDownload={downloadDatasetSource}
+            />
+          )}
+
           {error && <div className="error-box">{error}</div>}
         </section>
       </div>
@@ -950,12 +1092,16 @@ function WorkflowStrip({
   stage,
   evidence,
   experimentPlan,
+  datasetRegistry,
 }: {
   stage: ProjectStage;
   evidence: EvidenceReview | null;
   experimentPlan: ExperimentPlan | null;
+  datasetRegistry: DatasetRegistry | null;
 }) {
-  const current = experimentPlan
+  const current = datasetRegistry
+    ? 3
+    : experimentPlan
     ? 2
     : evidence || stage === "problem_frame_approved"
       ? 1
@@ -3181,6 +3327,180 @@ function preparationStatusLabel(status: PreparationStatus) {
   return {
     pending_review: "待复核",
     approved: "已批准",
+    needs_revision: "需修订",
+    stale: "已过期",
+  }[status];
+}
+
+function DatasetPanel({
+  registry,
+  loading,
+  onUpload,
+  onReview,
+  onDownload,
+}: {
+  registry: DatasetRegistry | null;
+  loading: boolean;
+  onUpload: (file: File) => void;
+  onReview: (
+    datasetId: string,
+    status: "analysis_ready" | "needs_revision",
+    note: string,
+  ) => void;
+  onDownload: (dataset: DatasetVersion) => void;
+}) {
+  const datasets = [...(registry?.datasets ?? [])].reverse();
+  return (
+    <section className="dataset-panel">
+      <div className="section-action-heading">
+        <div>
+          <span className="section-kicker">数据接入与质量控制</span>
+          <h3>不可变数据集版本</h3>
+          <p>每次上传都会保留原始文件并产生独立版本，校验不会修改数据。</p>
+        </div>
+        <label className={`dataset-upload ${loading ? "disabled" : ""}`}>
+          上传 CSV
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            disabled={loading}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) onUpload(file);
+              event.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+      {!datasets.length && (
+        <div className="dataset-empty">
+          <strong>尚未上传数据</strong>
+          <p>先下载数据模板并完成采集，再上传 UTF-8 CSV 进行确定性校验。</p>
+        </div>
+      )}
+      <div className="dataset-list">
+        {datasets.map((dataset) => (
+          <DatasetVersionCard
+            key={dataset.id}
+            dataset={dataset}
+            active={registry?.active_dataset_id === dataset.id}
+            loading={loading}
+            onReview={onReview}
+            onDownload={onDownload}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DatasetVersionCard({
+  dataset,
+  active,
+  loading,
+  onReview,
+  onDownload,
+}: {
+  dataset: DatasetVersion;
+  active: boolean;
+  loading: boolean;
+  onReview: (
+    datasetId: string,
+    status: "analysis_ready" | "needs_revision",
+    note: string,
+  ) => void;
+  onDownload: (dataset: DatasetVersion) => void;
+}) {
+  const [note, setNote] = useState(dataset.reviewer_note ?? "");
+  const report = dataset.quality_report;
+  return (
+    <article className={`dataset-version ${active ? "active" : ""}`}>
+      <div className="dataset-version-heading">
+        <div>
+          <div className="dataset-version-title">
+            <strong>版本 {dataset.version} · {dataset.filename}</strong>
+            {active && <span className="active-dataset">当前分析版本</span>}
+          </div>
+          <small>
+            {(dataset.byte_size / 1024).toFixed(1)} KB · SHA-256 {dataset.sha256.slice(0, 12)}… · {report.validator_version}
+          </small>
+        </div>
+        <span className={`dataset-status ${dataset.status}`}>
+          {datasetStatusLabel(dataset.status)}
+        </span>
+      </div>
+      {dataset.status === "stale" && (
+        <div className="approval-readiness">数据契约已变化；该版本仍可追溯，但不能进入新的统计分析。</div>
+      )}
+      <div className="quality-summary">
+        <div><span>数据行</span><strong>{report.row_count}</strong></div>
+        <div><span>字段</span><strong>{report.column_count}</strong></div>
+        <div className={report.error_count ? "quality-error" : ""}><span>错误</span><strong>{report.error_count}</strong></div>
+        <div className={report.warning_count ? "quality-warning" : ""}><span>警告</span><strong>{report.warning_count}</strong></div>
+      </div>
+      <div className="quality-issues">
+        <h4>质量问题</h4>
+        {!report.issues.length && <p className="quality-clear">未发现契约或数据错误。</p>}
+        {report.issues.map((issue) => (
+          <div className={`quality-issue ${issue.severity}`} key={`${issue.code}-${issue.field_key ?? "all"}-${issue.message}`}>
+            <span>{issue.severity === "error" ? "错误" : "警告"}</span>
+            <div>
+              <strong>{issue.field_key ? `${issue.field_key}：` : ""}{issue.message}</strong>
+              <small>
+                {issue.occurrence_count} 处
+                {issue.row_numbers.length ? ` · CSV 行 ${issue.row_numbers.join(", ")}` : ""}
+              </small>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="matrix-scroll">
+        <table className="quality-table">
+          <thead>
+            <tr><th>字段</th><th>缺失数</th><th>缺失率</th><th>无效值</th><th>不同值</th></tr>
+          </thead>
+          <tbody>
+            {report.field_summaries.map((field) => (
+              <tr key={field.field_key}>
+                <td>{field.field_key}</td>
+                <td>{field.missing_count}</td>
+                <td>{(field.missing_rate * 100).toFixed(1)}%</td>
+                <td>{field.invalid_count}</td>
+                <td>{field.distinct_count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <label>
+        数据复核备注
+        <textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} />
+      </label>
+      <div className="dataset-actions">
+        <button onClick={() => onDownload(dataset)} disabled={loading}>下载原始数据</button>
+        <button
+          disabled={loading || note.trim().length < 3 || dataset.status === "stale"}
+          onClick={() => onReview(dataset.id, "needs_revision", note)}
+        >
+          标记需修订
+        </button>
+        <button
+          className="approve-dataset"
+          disabled={loading || !report.valid_for_analysis || dataset.status === "stale"}
+          onClick={() => onReview(dataset.id, "analysis_ready", note)}
+        >
+          批准进入分析
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function datasetStatusLabel(status: DatasetStatus) {
+  return {
+    validation_failed: "校验未通过",
+    pending_review: "待人工复核",
+    analysis_ready: "分析就绪",
     needs_revision: "需修订",
     stale: "已过期",
   }[status];

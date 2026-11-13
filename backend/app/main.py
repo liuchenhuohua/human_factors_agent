@@ -26,25 +26,30 @@ from app.adapters.data_contract_builder import (
     CsvDataTemplateRenderer,
     RuleBasedDataContractBuilder,
 )
+from app.adapters.csv_dataset_validator import CsvDatasetValidator
 from app.adapters.evidence_extractor import (
     OpenAIEvidenceExtractor,
     RuleBasedEvidenceExtractor,
 )
 from app.adapters.local_document_storage import LocalDocumentStorage
+from app.adapters.local_dataset_storage import LocalDatasetStorage
 from app.adapters.problem_framer import RuleBasedProblemFramer
 from app.adapters.pypdf_parser import PypdfTextExtractor
 from app.adapters.power_calculator import StatsmodelsPowerCalculator
 from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
+from app.adapters.sqlite_dataset_store import SQLiteDatasetStore
 from app.adapters.sqlite_experiment_store import SQLiteExperimentStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
 from app.adapters.sqlite_preparation_store import SQLitePreparationStore
 from app.config import Settings, settings
 from app.domain.ports import ProblemFramer
 from app.transport.evidence_http import create_evidence_router
+from app.transport.dataset_http import create_dataset_router
 from app.transport.experiment_http import create_experiment_router
 from app.transport.preparation_http import create_preparation_router
 from app.transport.http import create_router
 from app.workflows.evidence_workflow import EvidenceWorkflow
+from app.workflows.dataset_workflow import DatasetWorkflow
 from app.workflows.experiment_workflow import ExperimentWorkflow
 from app.workflows.preparation_workflow import PreparationWorkflow
 from app.workflows.project_workflow import ProjectWorkflow
@@ -69,6 +74,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     evidence_store = SQLiteEvidenceStore(app_settings.database_path)
     experiment_store = SQLiteExperimentStore(app_settings.database_path)
     preparation_store = SQLitePreparationStore(app_settings.database_path)
+    dataset_store = SQLiteDatasetStore(app_settings.database_path)
     checkpoint_connection = sqlite3.connect(
         app_settings.checkpoint_database_path,
         check_same_thread=False,
@@ -132,6 +138,13 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         experiment_store,
         preparation_store,
     )
+    dataset_workflow = DatasetWorkflow(
+        CsvDatasetValidator(),
+        LocalDatasetStorage(app_settings.dataset_storage_path),
+        dataset_store,
+        preparation_workflow,
+        max_upload_bytes=app_settings.max_csv_upload_mb * 1024 * 1024,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -143,7 +156,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
 
     application = FastAPI(
         title=app_settings.app_name,
-        version="0.7.0",
+        version="0.8.0",
         lifespan=lifespan,
     )
     application.add_middleware(
@@ -163,6 +176,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     application.include_router(
         create_preparation_router(preparation_workflow), prefix="/api"
     )
+    application.include_router(create_dataset_router(dataset_workflow), prefix="/api")
     return application
 
 

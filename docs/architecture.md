@@ -204,8 +204,37 @@ ExperimentPlan
 记录时间等系统字段。只有人工批准且仍与当前实验方案一致的数据契约才能导出 CSV 模板。
 功效分析和数据契约都保存实验方案内容哈希；方案一旦变化，两者会标记为 `stale`。
 
+## 数据接入与质量控制
+
+```text
+已批准 DataContract
+   |
+   v
+DatasetWorkflow.upload
+   |── 文件格式与大小校验
+   |── CsvDatasetValidator：契约、逐行值、联合主键、质量摘要
+   |── LocalDatasetStorage：不可变原始 CSV
+   └── SQLiteDatasetStore：DatasetVersion + DataQualityReport
+           |
+           v
+       人工质量复核
+       |           |
+       | approve   | revise
+       v           v
+ analysis_ready  needs_revision
+```
+
+`DatasetWorkflow` 的上传接口隐藏解析、验证、持久化和版本分配。每次成功上传都产生新的
+`DatasetVersion`，保存原始文件 SHA-256、来源契约 ID 和契约内容哈希。CSV 验证器只执行
+可确定复现的规则：字段集合、字段数量、必填值、数据类型、分类编码、数值上下界、联合
+主键重复，以及字段级缺失率和不同值数量。质量问题保留出现次数和最多 20 个 CSV 行号。
+
+有错误的数据集保持 `validation_failed`，不能批准进入分析；零错误版本仍需人工复核后
+才成为 `analysis_ready`。数据契约内容变化或失效时，相关数据集被标记为 `stale`，活动
+数据集引用同时清除，但不可变原始文件仍可下载用于审计。
+
 ## 下一模块
 
-下一切片将实现按数据契约上传 CSV、确定性逐行校验和数据质量报告，为后续统计执行准备
-一个不可变、可追溯的数据集版本。
+下一切片将根据已批准实验方案和分析就绪数据集生成可审核的统计执行计划，确定性运行
+描述统计、假设检验、效应量与诊断，并把每个结论绑定到数据版本和分析代码版本。
 
