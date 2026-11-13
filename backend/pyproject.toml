@@ -1,6 +1,6 @@
 [project]
 name = "human-factors-assistant"
-version = "0.5.0"
+version = "0.6.0"
 description = "Evidence-driven personal assistant for human factors engineers"
 requires-python = ">=3.11"
 dependencies = [

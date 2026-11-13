@@ -18,6 +18,10 @@ from app.adapters.evidence_synthesis import (
     RuleBasedEvidenceAppraiser,
     RuleBasedEvidenceSynthesizer,
 )
+from app.adapters.experiment_designer import (
+    OpenAIExperimentDesigner,
+    RuleBasedExperimentDesigner,
+)
 from app.adapters.evidence_extractor import (
     OpenAIEvidenceExtractor,
     RuleBasedEvidenceExtractor,
@@ -26,12 +30,15 @@ from app.adapters.local_document_storage import LocalDocumentStorage
 from app.adapters.problem_framer import RuleBasedProblemFramer
 from app.adapters.pypdf_parser import PypdfTextExtractor
 from app.adapters.sqlite_evidence_store import SQLiteEvidenceStore
+from app.adapters.sqlite_experiment_store import SQLiteExperimentStore
 from app.adapters.sqlite_project_store import SQLiteProjectStore
 from app.config import Settings, settings
 from app.domain.ports import ProblemFramer
 from app.transport.evidence_http import create_evidence_router
+from app.transport.experiment_http import create_experiment_router
 from app.transport.http import create_router
 from app.workflows.evidence_workflow import EvidenceWorkflow
+from app.workflows.experiment_workflow import ExperimentWorkflow
 from app.workflows.project_workflow import ProjectWorkflow
 
 
@@ -52,6 +59,7 @@ def build_problem_framer(
 def create_app(app_settings: Settings = settings) -> FastAPI:
     store = SQLiteProjectStore(app_settings.database_path)
     evidence_store = SQLiteEvidenceStore(app_settings.database_path)
+    experiment_store = SQLiteExperimentStore(app_settings.database_path)
     checkpoint_connection = sqlite3.connect(
         app_settings.checkpoint_database_path,
         check_same_thread=False,
@@ -97,6 +105,17 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         checkpointer=checkpointer,
         max_upload_bytes=app_settings.max_pdf_upload_mb * 1024 * 1024,
     )
+    experiment_designer = (
+        OpenAIExperimentDesigner(model_generator)
+        if model_generator is not None
+        else RuleBasedExperimentDesigner()
+    )
+    experiment_workflow = ExperimentWorkflow(
+        experiment_designer,
+        store,
+        evidence_store,
+        experiment_store,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -108,7 +127,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
 
     application = FastAPI(
         title=app_settings.app_name,
-        version="0.5.0",
+        version="0.6.0",
         lifespan=lifespan,
     )
     application.add_middleware(
@@ -121,6 +140,9 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     application.include_router(create_router(workflow), prefix="/api")
     application.include_router(
         create_evidence_router(evidence_workflow), prefix="/api"
+    )
+    application.include_router(
+        create_experiment_router(experiment_workflow), prefix="/api"
     )
     return application
 

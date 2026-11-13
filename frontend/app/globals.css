@@ -609,6 +609,90 @@ button:disabled { opacity: 0.6; cursor: wait; }
 .claim-references label { display: flex; flex-direction: row; align-items: center; gap: 5px; font-size: 11px; }
 .claim-references input { width: auto; }
 
+.experiment-entry, .stale-plan {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 14px;
+  background: #edf1ff;
+  padding: 16px;
+  color: #2e477d;
+}
+.experiment-entry div { display: grid; gap: 4px; }
+.experiment-entry p, .stale-plan p { margin: 0; color: var(--muted); font-size: 13px; }
+.experiment-entry button, .stale-plan button {
+  border: 0;
+  border-radius: 8px;
+  background: #355da8;
+  color: white;
+  padding: 10px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 750;
+}
+.stale-plan { align-items: flex-start; flex-direction: column; background: #ffeded; color: #8c2828; }
+.stale-plan button { background: #8c2828; }
+
+.experiment-editor {
+  display: grid;
+  gap: 18px;
+  padding-top: 8px;
+}
+.experiment-editor h3 { margin: 4px 0; }
+.experiment-section {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.experiment-section h4 { margin: 0; color: var(--green); font-size: 15px; }
+.experiment-card {
+  display: grid;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fafbf8;
+  padding: 14px;
+}
+.compact-card { grid-template-columns: minmax(150px, 0.4fr) 1fr; align-items: start; }
+.procedure-card { position: relative; padding-left: 48px; }
+.procedure-order {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  background: var(--green);
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+}
+.evidence-reference-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+.evidence-reference-picker > span { width: 100%; color: var(--muted); font-size: 11px; font-weight: 800; }
+.evidence-reference-picker label { display: flex; flex-direction: row; align-items: center; gap: 5px; font-size: 11px; }
+.evidence-reference-picker input { width: auto; }
+.power-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.power-warning, .approval-readiness {
+  border-left: 4px solid #d9a52e;
+  border-radius: 0 10px 10px 0;
+  background: #fff6df;
+  padding: 11px 13px;
+  color: #725415;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.approval-readiness { border-left-color: #b84d4d; background: #ffeded; color: #8c2828; }
+
 .compact-empty { min-height: 220px; }
 
 @media (max-width: 900px) {
@@ -628,4 +712,6 @@ button:disabled { opacity: 0.6; cursor: wait; }
   .evidence-review-actions { align-items: stretch; flex-direction: column; }
   .appraisal-entry, .synthesis-entry { align-items: stretch; flex-direction: column; }
   .appraisal-domain, .synthesis-claim { grid-template-columns: 1fr; }
+  .experiment-entry { align-items: stretch; flex-direction: column; }
+  .compact-card, .power-grid { grid-template-columns: 1fr; }
 }

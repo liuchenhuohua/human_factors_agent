@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useState, type ReactNode } from "react";
 
 type ProjectStage =
   | "intake"
@@ -201,11 +201,100 @@ type EvidenceReview = {
   synthesis: EvidenceSynthesis | null;
 };
 
+type ExperimentStatus = "pending_review" | "approved" | "needs_revision" | "stale";
+type ExperimentDesignType =
+  | "undecided"
+  | "within_subjects"
+  | "between_subjects"
+  | "mixed"
+  | "quasi_experimental";
+type VariableRole =
+  | "independent"
+  | "dependent"
+  | "control"
+  | "covariate"
+  | "manipulation_check";
+
+type ExperimentPlanContent = {
+  title: string;
+  objective: string;
+  design_type: ExperimentDesignType;
+  hypotheses: Array<{
+    statement: string;
+    null_hypothesis: string;
+    direction: "non_directional" | "increase" | "decrease";
+    primary_outcome: string;
+    evidence_item_ids: string[];
+  }>;
+  conditions: Array<{ name: string; description: string }>;
+  variables: Array<{
+    name: string;
+    role: VariableRole;
+    operational_definition: string;
+    measurement_method: string;
+    measurement_timing: string;
+    evidence_item_ids: string[];
+  }>;
+  participant_plan: {
+    target_population: string;
+    inclusion_criteria: string[];
+    exclusion_criteria: string[];
+    recruitment_strategy: string;
+    sampling_method: string;
+  };
+  sample_size_planning: {
+    planned_primary_test: string;
+    effect_size_metric: string | null;
+    expected_effect_size: number | null;
+    effect_size_basis: string;
+    alpha: number | null;
+    target_power: number | null;
+    attrition_allowance: number | null;
+    calculation_note: string;
+  };
+  randomization_plan: string;
+  counterbalancing_plan: string;
+  procedure: Array<{
+    order: number;
+    name: string;
+    description: string;
+    duration_minutes: number | null;
+    data_collected: string[];
+  }>;
+  analysis_plan: Array<{
+    hypothesis_index: number;
+    method: string;
+    outcome: string;
+    predictors: string[];
+    assumptions_to_check: string[];
+    missing_data_strategy: string;
+    multiplicity_strategy: string;
+  }>;
+  ethics_and_safety: string[];
+  assumptions: string[];
+  uncertainties: string[];
+  evidence_grounded_decisions: Array<{
+    decision: string;
+    rationale: string;
+    evidence_item_ids: string[];
+  }>;
+};
+
+type ExperimentPlan = ExperimentPlanContent & {
+  id: string;
+  project_id: string;
+  source_synthesis_id: string;
+  status: ExperimentStatus;
+  generation: GenerationMetadata;
+  reviewer_note: string | null;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function Home() {
   const [project, setProject] = useState<Project | null>(null);
   const [evidence, setEvidence] = useState<EvidenceReview | null>(null);
+  const [experimentPlan, setExperimentPlan] = useState<ExperimentPlan | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [revisionFeedback, setRevisionFeedback] = useState("");
   const [editing, setEditing] = useState(false);
@@ -242,6 +331,7 @@ export default function Home() {
     setAnswers({});
     setEditing(false);
     setEvidence(null);
+    setExperimentPlan(null);
     await requestProject("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -420,6 +510,46 @@ export default function Home() {
     });
   }
 
+  async function requestExperiment(path: string, init?: RequestInit) {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBase}${path}`, init);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? "实验设计请求失败。");
+      }
+      const updated: ExperimentPlan = await response.json();
+      setExperimentPlan(updated);
+      return updated;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "发生未知错误");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function startExperimentPlan() {
+    if (!project) return;
+    await requestExperiment(`/api/projects/${project.id}/experiment-plan`, {
+      method: "POST",
+    });
+  }
+
+  async function reviewExperimentPlan(
+    content: ExperimentPlanContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) {
+    if (!project) return;
+    await requestExperiment(`/api/projects/${project.id}/experiment-plan`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, status, note: note.trim() || null }),
+    });
+  }
+
   return (
     <main>
       <header className="hero">
@@ -434,7 +564,11 @@ export default function Home() {
         </div>
       </header>
 
-      <WorkflowStrip stage={project?.stage ?? "intake"} evidence={evidence} />
+      <WorkflowStrip
+        stage={project?.stage ?? "intake"}
+        evidence={evidence}
+        experimentPlan={experimentPlan}
+      />
 
       <div className="workspace">
         <section className="panel intake-panel">
@@ -486,7 +620,13 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <span className="section-kicker">Agent 产物</span>
-              <h2>{evidence?.synthesis ? "证据矩阵与综合" : resultTitle(project?.stage, evidence?.stage)}</h2>
+              <h2>
+                {experimentPlan
+                  ? "实验设计方案"
+                  : evidence?.synthesis
+                    ? "证据矩阵与综合"
+                    : resultTitle(project?.stage, evidence?.stage)}
+              </h2>
             </div>
             {project && (
               <span className={`badge ${project.stage}`}>
@@ -576,7 +716,7 @@ export default function Home() {
             />
           )}
 
-          {evidence?.stage === "screening" && (
+          {evidence?.stage === "screening" && !experimentPlan && (
             <LiteratureScreening
               candidates={evidence.candidates}
               documents={evidence.documents}
@@ -594,6 +734,28 @@ export default function Home() {
             />
           )}
 
+          {evidence?.synthesis?.status === "approved" && !experimentPlan && (
+            <div className="experiment-entry">
+              <div>
+                <strong>证据综合已批准</strong>
+                <p>可以生成带证据引用、功效分析输入和人工审批的实验方案草案。</p>
+              </div>
+              <button disabled={loading} onClick={startExperimentPlan}>
+                生成实验方案
+              </button>
+            </div>
+          )}
+
+          {experimentPlan && evidence?.synthesis && (
+            <ExperimentPlanEditor
+              plan={experimentPlan}
+              matrix={evidence.synthesis.matrix}
+              loading={loading}
+              onReview={reviewExperimentPlan}
+              onRegenerate={startExperimentPlan}
+            />
+          )}
+
           {error && <div className="error-box">{error}</div>}
         </section>
       </div>
@@ -604,11 +766,17 @@ export default function Home() {
 function WorkflowStrip({
   stage,
   evidence,
+  experimentPlan,
 }: {
   stage: ProjectStage;
   evidence: EvidenceReview | null;
+  experimentPlan: ExperimentPlan | null;
 }) {
-  const current = evidence || stage === "problem_frame_approved" ? 1 : 0;
+  const current = experimentPlan
+    ? 2
+    : evidence || stage === "problem_frame_approved"
+      ? 1
+      : 0;
   return (
     <section className="workflow-strip" aria-label="研究工作流">
       {["问题界定", "文献证据", "实验设计", "数据分析", "人因建议"].map(
@@ -1631,6 +1799,736 @@ function confidenceLabel(confidence: AppraisalConfidence) {
     low: "低",
     unclear: "信息不足",
   }[confidence];
+}
+
+function ExperimentPlanEditor({
+  plan,
+  matrix,
+  loading,
+  onReview,
+  onRegenerate,
+}: {
+  plan: ExperimentPlan;
+  matrix: EvidenceMatrixRow[];
+  loading: boolean;
+  onReview: (
+    content: ExperimentPlanContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+  onRegenerate: () => void;
+}) {
+  const [content, setContent] = useState<ExperimentPlanContent>({
+    title: plan.title,
+    objective: plan.objective,
+    design_type: plan.design_type,
+    hypotheses: plan.hypotheses,
+    conditions: plan.conditions,
+    variables: plan.variables,
+    participant_plan: plan.participant_plan,
+    sample_size_planning: plan.sample_size_planning,
+    randomization_plan: plan.randomization_plan,
+    counterbalancing_plan: plan.counterbalancing_plan,
+    procedure: plan.procedure,
+    analysis_plan: plan.analysis_plan,
+    ethics_and_safety: plan.ethics_and_safety,
+    assumptions: plan.assumptions,
+    uncertainties: plan.uncertainties,
+    evidence_grounded_decisions: plan.evidence_grounded_decisions,
+  });
+  const [note, setNote] = useState(plan.reviewer_note ?? "");
+  const approvalReady = content.design_type !== "undecided"
+    && Boolean(content.sample_size_planning.effect_size_metric)
+    && content.sample_size_planning.expected_effect_size !== null
+    && content.sample_size_planning.alpha !== null
+    && content.sample_size_planning.target_power !== null;
+
+  if (plan.status === "stale") {
+    return (
+      <div className="stale-plan">
+        <strong>实验方案已过期</strong>
+        <p>上游证据综合已经变化。旧方案保留用于审计，但不能继续批准。</p>
+        <button disabled={loading} onClick={onRegenerate}>根据最新证据重新生成</button>
+      </div>
+    );
+  }
+
+  return (
+    <section className="experiment-editor">
+      <div className="evidence-item-heading">
+        <div>
+          <span className="section-kicker">阶段 3 · 实验设计</span>
+          <h3>证据驱动实验方案</h3>
+          <small>{plan.generation.model ?? (plan.generation.generator === "human" ? "人工复核版本" : "本地保守草案")}</small>
+        </div>
+        <span className={`evidence-status ${plan.status}`}>
+          {reviewStatusLabel(plan.status as ReviewStatus)}
+        </span>
+      </div>
+
+      <label>
+        方案标题
+        <input
+          value={content.title}
+          onChange={(event) => setContent((current) => ({ ...current, title: event.target.value }))}
+        />
+      </label>
+      <label>
+        研究目标
+        <textarea
+          rows={4}
+          value={content.objective}
+          onChange={(event) => setContent((current) => ({ ...current, objective: event.target.value }))}
+        />
+      </label>
+      <label>
+        实验设计类型
+        <select
+          value={content.design_type}
+          onChange={(event) => setContent((current) => ({
+            ...current,
+            design_type: event.target.value as ExperimentDesignType,
+          }))}
+        >
+          <option value="undecided">待确定</option>
+          <option value="within_subjects">组内设计</option>
+          <option value="between_subjects">组间设计</option>
+          <option value="mixed">混合设计</option>
+          <option value="quasi_experimental">准实验设计</option>
+        </select>
+      </label>
+
+      <ExperimentSection title="研究假设">
+        {content.hypotheses.map((hypothesis, index) => (
+          <div className="experiment-card" key={`hypothesis-${index}`}>
+            <strong>假设 {index + 1}</strong>
+            <label>
+              备择假设
+              <textarea
+                rows={2}
+                value={hypothesis.statement}
+                onChange={(event) => setContent((current) => ({
+                  ...current,
+                  hypotheses: current.hypotheses.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, statement: event.target.value } : item
+                  ),
+                }))}
+              />
+            </label>
+            <label>
+              零假设
+              <textarea
+                rows={2}
+                value={hypothesis.null_hypothesis}
+                onChange={(event) => setContent((current) => ({
+                  ...current,
+                  hypotheses: current.hypotheses.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, null_hypothesis: event.target.value } : item
+                  ),
+                }))}
+              />
+            </label>
+            <div className="field-grid">
+              <label>
+                方向
+                <select
+                  value={hypothesis.direction}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    hypotheses: current.hypotheses.map((item, itemIndex) =>
+                      itemIndex === index
+                        ? { ...item, direction: event.target.value as typeof item.direction }
+                        : item
+                    ),
+                  }))}
+                >
+                  <option value="non_directional">非方向性</option>
+                  <option value="increase">预期增加</option>
+                  <option value="decrease">预期降低</option>
+                </select>
+              </label>
+              <label>
+                主要结局
+                <input
+                  value={hypothesis.primary_outcome}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    hypotheses: current.hypotheses.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, primary_outcome: event.target.value } : item
+                    ),
+                  }))}
+                />
+              </label>
+            </div>
+            <EvidenceReferencePicker
+              matrix={matrix}
+              selected={hypothesis.evidence_item_ids}
+              onChange={(selected) => setContent((current) => ({
+                ...current,
+                hypotheses: current.hypotheses.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, evidence_item_ids: selected } : item
+                ),
+              }))}
+            />
+          </div>
+        ))}
+      </ExperimentSection>
+
+      <ExperimentSection title="实验条件">
+        {content.conditions.map((condition, index) => (
+          <div className="experiment-card compact-card" key={`condition-${index}`}>
+            <input
+              value={condition.name}
+              onChange={(event) => setContent((current) => ({
+                ...current,
+                conditions: current.conditions.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, name: event.target.value } : item
+                ),
+              }))}
+            />
+            <textarea
+              rows={2}
+              value={condition.description}
+              onChange={(event) => setContent((current) => ({
+                ...current,
+                conditions: current.conditions.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, description: event.target.value } : item
+                ),
+              }))}
+            />
+          </div>
+        ))}
+      </ExperimentSection>
+
+      <ExperimentSection title="变量与操作化">
+        {content.variables.map((variable, index) => (
+          <div className="experiment-card" key={`variable-${index}`}>
+            <div className="field-grid">
+              <label>
+                变量名称
+                <input
+                  value={variable.name}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    variables: current.variables.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, name: event.target.value } : item
+                    ),
+                  }))}
+                />
+              </label>
+              <label>
+                变量角色
+                <select
+                  value={variable.role}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    variables: current.variables.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, role: event.target.value as VariableRole } : item
+                    ),
+                  }))}
+                >
+                  <option value="independent">自变量</option>
+                  <option value="dependent">因变量</option>
+                  <option value="control">控制变量</option>
+                  <option value="covariate">协变量</option>
+                  <option value="manipulation_check">操纵检验</option>
+                </select>
+              </label>
+            </div>
+            {([
+              ["operational_definition", "操作化定义"],
+              ["measurement_method", "测量或记录方法"],
+              ["measurement_timing", "测量时点"],
+            ] as const).map(([field, label]) => (
+              <label key={field}>
+                {label}
+                <textarea
+                  rows={2}
+                  value={variable[field]}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    variables: current.variables.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, [field]: event.target.value } : item
+                    ),
+                  }))}
+                />
+              </label>
+            ))}
+            <EvidenceReferencePicker
+              matrix={matrix}
+              selected={variable.evidence_item_ids}
+              onChange={(selected) => setContent((current) => ({
+                ...current,
+                variables: current.variables.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, evidence_item_ids: selected } : item
+                ),
+              }))}
+            />
+          </div>
+        ))}
+      </ExperimentSection>
+
+      <ExperimentSection title="被试与招募">
+        <label>
+          目标人群
+          <input
+            value={content.participant_plan.target_population}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              participant_plan: { ...current.participant_plan, target_population: event.target.value },
+            }))}
+          />
+        </label>
+        <div className="field-grid">
+          <StringListField
+            label="纳入标准"
+            value={content.participant_plan.inclusion_criteria}
+            onChange={(value) => setContent((current) => ({
+              ...current,
+              participant_plan: { ...current.participant_plan, inclusion_criteria: value },
+            }))}
+          />
+          <StringListField
+            label="排除标准"
+            value={content.participant_plan.exclusion_criteria}
+            onChange={(value) => setContent((current) => ({
+              ...current,
+              participant_plan: { ...current.participant_plan, exclusion_criteria: value },
+            }))}
+          />
+        </div>
+        <label>
+          招募策略
+          <textarea
+            rows={2}
+            value={content.participant_plan.recruitment_strategy}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              participant_plan: { ...current.participant_plan, recruitment_strategy: event.target.value },
+            }))}
+          />
+        </label>
+        <label>
+          抽样方法
+          <input
+            value={content.participant_plan.sampling_method}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              participant_plan: { ...current.participant_plan, sampling_method: event.target.value },
+            }))}
+          />
+        </label>
+      </ExperimentSection>
+
+      <ExperimentSection title="功效分析输入">
+        <div className="power-warning">
+          此处只记录计算输入，不会生成最终样本量。样本量将在确定性计算模块中产生。
+        </div>
+        <label>
+          计划主要检验
+          <input
+            value={content.sample_size_planning.planned_primary_test}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              sample_size_planning: { ...current.sample_size_planning, planned_primary_test: event.target.value },
+            }))}
+          />
+        </label>
+        <div className="power-grid">
+          <label>
+            效应量指标
+            <input
+              value={content.sample_size_planning.effect_size_metric ?? ""}
+              placeholder="例如 Cohen's dz"
+              onChange={(event) => setContent((current) => ({
+                ...current,
+                sample_size_planning: { ...current.sample_size_planning, effect_size_metric: event.target.value || null },
+              }))}
+            />
+          </label>
+          <NumericNullableField
+            label="预期效应量"
+            value={content.sample_size_planning.expected_effect_size}
+            onChange={(value) => setContent((current) => ({
+              ...current,
+              sample_size_planning: { ...current.sample_size_planning, expected_effect_size: value },
+            }))}
+          />
+          <NumericNullableField
+            label="显著性水平 α"
+            value={content.sample_size_planning.alpha}
+            min={0.001}
+            max={0.999}
+            step={0.001}
+            onChange={(value) => setContent((current) => ({
+              ...current,
+              sample_size_planning: { ...current.sample_size_planning, alpha: value },
+            }))}
+          />
+          <NumericNullableField
+            label="目标检验效能"
+            value={content.sample_size_planning.target_power}
+            min={0.01}
+            max={0.99}
+            step={0.01}
+            onChange={(value) => setContent((current) => ({
+              ...current,
+              sample_size_planning: { ...current.sample_size_planning, target_power: value },
+            }))}
+          />
+          <NumericNullableField
+            label="预计脱落比例"
+            value={content.sample_size_planning.attrition_allowance}
+            min={0}
+            max={0.99}
+            step={0.01}
+            onChange={(value) => setContent((current) => ({
+              ...current,
+              sample_size_planning: { ...current.sample_size_planning, attrition_allowance: value },
+            }))}
+          />
+        </div>
+        <label>
+          效应量依据
+          <textarea
+            rows={2}
+            value={content.sample_size_planning.effect_size_basis}
+            onChange={(event) => setContent((current) => ({
+              ...current,
+              sample_size_planning: { ...current.sample_size_planning, effect_size_basis: event.target.value },
+            }))}
+          />
+        </label>
+        <small>{content.sample_size_planning.calculation_note}</small>
+      </ExperimentSection>
+
+      <ExperimentSection title="随机化与顺序控制">
+        <label>
+          随机化计划
+          <textarea
+            rows={3}
+            value={content.randomization_plan}
+            onChange={(event) => setContent((current) => ({ ...current, randomization_plan: event.target.value }))}
+          />
+        </label>
+        <label>
+          顺序平衡计划
+          <textarea
+            rows={3}
+            value={content.counterbalancing_plan}
+            onChange={(event) => setContent((current) => ({ ...current, counterbalancing_plan: event.target.value }))}
+          />
+        </label>
+      </ExperimentSection>
+
+      <ExperimentSection title="实验流程">
+        {content.procedure.map((step, index) => (
+          <div className="experiment-card procedure-card" key={`procedure-${step.order}`}>
+            <span className="procedure-order">{step.order}</span>
+            <label>
+              步骤名称
+              <input
+                value={step.name}
+                onChange={(event) => setContent((current) => ({
+                  ...current,
+                  procedure: current.procedure.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, name: event.target.value } : item
+                  ),
+                }))}
+              />
+            </label>
+            <label>
+              说明
+              <textarea
+                rows={2}
+                value={step.description}
+                onChange={(event) => setContent((current) => ({
+                  ...current,
+                  procedure: current.procedure.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, description: event.target.value } : item
+                  ),
+                }))}
+              />
+            </label>
+            <NumericNullableField
+              label="预计分钟数"
+              value={step.duration_minutes}
+              min={1}
+              step={1}
+              onChange={(value) => setContent((current) => ({
+                ...current,
+                procedure: current.procedure.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, duration_minutes: value } : item
+                ),
+              }))}
+            />
+            <StringListField
+              label="采集数据"
+              value={step.data_collected}
+              onChange={(value) => setContent((current) => ({
+                ...current,
+                procedure: current.procedure.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, data_collected: value } : item
+                ),
+              }))}
+            />
+          </div>
+        ))}
+      </ExperimentSection>
+
+      <ExperimentSection title="统计分析计划">
+        {content.analysis_plan.map((analysis, index) => (
+          <div className="experiment-card" key={`analysis-${index}`}>
+            <strong>对应假设 {analysis.hypothesis_index}</strong>
+            <label>
+              方法
+              <textarea
+                rows={2}
+                value={analysis.method}
+                onChange={(event) => setContent((current) => ({
+                  ...current,
+                  analysis_plan: current.analysis_plan.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, method: event.target.value } : item
+                  ),
+                }))}
+              />
+            </label>
+            <label>
+              结局
+              <input
+                value={analysis.outcome}
+                onChange={(event) => setContent((current) => ({
+                  ...current,
+                  analysis_plan: current.analysis_plan.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, outcome: event.target.value } : item
+                  ),
+                }))}
+              />
+            </label>
+            <StringListField
+              label="预测变量"
+              value={analysis.predictors}
+              onChange={(value) => setContent((current) => ({
+                ...current,
+                analysis_plan: current.analysis_plan.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, predictors: value } : item
+                ),
+              }))}
+            />
+            <StringListField
+              label="需要检查的假设"
+              value={analysis.assumptions_to_check}
+              onChange={(value) => setContent((current) => ({
+                ...current,
+                analysis_plan: current.analysis_plan.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, assumptions_to_check: value } : item
+                ),
+              }))}
+            />
+            {([
+              ["missing_data_strategy", "缺失数据策略"],
+              ["multiplicity_strategy", "多重比较策略"],
+            ] as const).map(([field, label]) => (
+              <label key={field}>
+                {label}
+                <textarea
+                  rows={2}
+                  value={analysis[field]}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    analysis_plan: current.analysis_plan.map((item, itemIndex) =>
+                      itemIndex === index ? { ...item, [field]: event.target.value } : item
+                    ),
+                  }))}
+                />
+              </label>
+            ))}
+          </div>
+        ))}
+      </ExperimentSection>
+
+      <div className="field-grid">
+        <StringListField
+          label="伦理与安全"
+          value={content.ethics_and_safety}
+          onChange={(value) => setContent((current) => ({ ...current, ethics_and_safety: value }))}
+        />
+        <StringListField
+          label="当前假设"
+          value={content.assumptions}
+          onChange={(value) => setContent((current) => ({ ...current, assumptions: value }))}
+        />
+      </div>
+      <StringListField
+        label="尚待确认的不确定性"
+        value={content.uncertainties}
+        onChange={(value) => setContent((current) => ({ ...current, uncertainties: value }))}
+      />
+
+      <ExperimentSection title="证据支持的设计决策">
+        {content.evidence_grounded_decisions.map((decision, index) => (
+          <div className="experiment-card" key={`decision-${index}`}>
+            <textarea
+              rows={2}
+              value={decision.decision}
+              onChange={(event) => setContent((current) => ({
+                ...current,
+                evidence_grounded_decisions: current.evidence_grounded_decisions.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, decision: event.target.value } : item
+                ),
+              }))}
+            />
+            <textarea
+              rows={2}
+              value={decision.rationale}
+              onChange={(event) => setContent((current) => ({
+                ...current,
+                evidence_grounded_decisions: current.evidence_grounded_decisions.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, rationale: event.target.value } : item
+                ),
+              }))}
+            />
+            <EvidenceReferencePicker
+              matrix={matrix}
+              selected={decision.evidence_item_ids}
+              onChange={(selected) => setContent((current) => ({
+                ...current,
+                evidence_grounded_decisions: current.evidence_grounded_decisions.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, evidence_item_ids: selected } : item
+                ),
+              }))}
+            />
+          </div>
+        ))}
+      </ExperimentSection>
+
+      {!approvalReady && (
+        <div className="approval-readiness">
+          批准前必须确定设计类型，并填写效应量指标、预期效应量、α 和目标检验效能。
+        </div>
+      )}
+      <label>
+        实验方案复核备注
+        <textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} />
+      </label>
+      <div className="evidence-review-actions">
+        <button
+          disabled={loading || note.trim().length < 3}
+          onClick={() => onReview(content, "needs_revision", note)}
+        >
+          标记需修订
+        </button>
+        <button
+          className="approve-evidence"
+          disabled={loading || !approvalReady}
+          onClick={() => onReview(content, "approved", note)}
+        >
+          批准实验方案
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ExperimentSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="experiment-section">
+      <h4>{title}</h4>
+      {children}
+    </div>
+  );
+}
+
+function EvidenceReferencePicker({
+  matrix,
+  selected,
+  onChange,
+}: {
+  matrix: EvidenceMatrixRow[];
+  selected: string[];
+  onChange: (selected: string[]) => void;
+}) {
+  return (
+    <div className="evidence-reference-picker">
+      <span>证据引用</span>
+      {matrix.map((row) => {
+        const checked = selected.includes(row.evidence_item_id);
+        return (
+          <label key={row.evidence_item_id}>
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => onChange(
+                checked
+                  ? selected.filter((id) => id !== row.evidence_item_id)
+                  : [...selected, row.evidence_item_id],
+              )}
+            />
+            {row.citation}
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+function StringListField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string[];
+  onChange: (value: string[]) => void;
+}) {
+  return (
+    <label>
+      {label} <small>每行一项</small>
+      <textarea
+        rows={4}
+        value={value.join("\n")}
+        onChange={(event) => onChange(
+          event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
+        )}
+      />
+    </label>
+  );
+}
+
+function NumericNullableField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (value: number | null) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  return (
+    <label>
+      {label}
+      <input
+        type="number"
+        value={value ?? ""}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)}
+      />
+    </label>
+  );
 }
 
 function ArtifactList({
