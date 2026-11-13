@@ -1,6 +1,6 @@
 [project]
 name = "human-factors-assistant"
-version = "0.6.0"
+version = "0.7.0"
 description = "Evidence-driven personal assistant for human factors engineers"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,8 @@ dependencies = [
   "pydantic-settings>=2.7",
   "pypdf>=5.4",
   "python-multipart>=0.0.20",
+  "scipy>=1.15,<1.19",
+  "statsmodels>=0.15,<0.16",
   "uvicorn[standard]>=0.34",
 ]
 

@@ -289,12 +289,85 @@ type ExperimentPlan = ExperimentPlanContent & {
   reviewer_note: string | null;
 };
 
+type PreparationStatus = "pending_review" | "approved" | "needs_revision" | "stale";
+type PowerTestType = "independent_t" | "paired_t" | "one_way_anova" | "correlation";
+
+type PowerAnalysisRequest = {
+  test_type: PowerTestType;
+  effect_size: number;
+  alpha: number;
+  target_power: number;
+  alternative: "two-sided" | "larger" | "smaller";
+  groups: number;
+  allocation_ratio: number;
+  attrition_rate: number;
+  sensitivity_effect_sizes: number[];
+  sensitivity_powers: number[];
+};
+
+type PowerScenario = {
+  effect_size: number;
+  target_power: number;
+  nominal_total_n: number;
+  adjusted_total_n: number;
+  nominal_per_group: number[];
+  adjusted_per_group: number[];
+};
+
+type PowerAnalysis = {
+  id: string;
+  request: PowerAnalysisRequest;
+  primary_result: PowerScenario;
+  sensitivity_results: PowerScenario[];
+  method: string;
+  package_versions: Record<string, string>;
+  status: PreparationStatus;
+  reviewer_note: string | null;
+};
+
+type DataField = {
+  key: string;
+  label: string;
+  role: string;
+  data_type: "string" | "integer" | "float" | "category" | "boolean" | "datetime";
+  unit: string | null;
+  required: boolean;
+  allowed_min: number | null;
+  allowed_max: number | null;
+  categories: string[];
+  missing_values: string[];
+  measurement_timing: string;
+  source: string;
+  sensitive: boolean;
+  validation_rules: string[];
+};
+
+type DataContractContent = {
+  row_grain: string;
+  primary_key_fields: string[];
+  fields: DataField[];
+  collection_notes: string[];
+};
+
+type DataContract = DataContractContent & {
+  id: string;
+  status: PreparationStatus;
+  reviewer_note: string | null;
+};
+
+type StudyPreparation = {
+  project_id: string;
+  power_analysis: PowerAnalysis | null;
+  data_contract: DataContract | null;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function Home() {
   const [project, setProject] = useState<Project | null>(null);
   const [evidence, setEvidence] = useState<EvidenceReview | null>(null);
   const [experimentPlan, setExperimentPlan] = useState<ExperimentPlan | null>(null);
+  const [preparation, setPreparation] = useState<StudyPreparation | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [revisionFeedback, setRevisionFeedback] = useState("");
   const [editing, setEditing] = useState(false);
@@ -332,6 +405,7 @@ export default function Home() {
     setEditing(false);
     setEvidence(null);
     setExperimentPlan(null);
+    setPreparation(null);
     await requestProject("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -550,6 +624,100 @@ export default function Home() {
     });
   }
 
+  async function requestPreparation(path: string, init?: RequestInit) {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBase}${path}`, init);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? "研究执行准备请求失败。");
+      }
+      const updated: StudyPreparation = await response.json();
+      setPreparation(updated);
+      return updated;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "发生未知错误");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function calculatePower(request: PowerAnalysisRequest) {
+    if (!project) return;
+    await requestPreparation(
+      `/api/projects/${project.id}/study-preparation/power-analysis`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+  }
+
+  async function reviewPower(status: "approved" | "needs_revision", note: string) {
+    if (!project) return;
+    await requestPreparation(
+      `/api/projects/${project.id}/study-preparation/power-analysis`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, note: note.trim() || null }),
+      },
+    );
+  }
+
+  async function generateDataContract() {
+    if (!project) return;
+    await requestPreparation(
+      `/api/projects/${project.id}/study-preparation/data-contract`,
+      { method: "POST" },
+    );
+  }
+
+  async function reviewDataContract(
+    content: DataContractContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) {
+    if (!project) return;
+    await requestPreparation(
+      `/api/projects/${project.id}/study-preparation/data-contract`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, status, note: note.trim() || null }),
+      },
+    );
+  }
+
+  async function downloadDataTemplate() {
+    if (!project) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiBase}/api/projects/${project.id}/study-preparation/template.csv`,
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail ?? "数据模板下载失败。");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `human-factors-${project.id}-template.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "发生未知错误");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main>
       <header className="hero">
@@ -621,7 +789,9 @@ export default function Home() {
             <div>
               <span className="section-kicker">Agent 产物</span>
               <h2>
-                {experimentPlan
+                {preparation
+                  ? "功效分析与数据契约"
+                  : experimentPlan
                   ? "实验设计方案"
                   : evidence?.synthesis
                     ? "证据矩阵与综合"
@@ -753,6 +923,19 @@ export default function Home() {
               loading={loading}
               onReview={reviewExperimentPlan}
               onRegenerate={startExperimentPlan}
+            />
+          )}
+
+          {experimentPlan?.status === "approved" && (
+            <StudyPreparationPanel
+              experimentPlan={experimentPlan}
+              preparation={preparation}
+              loading={loading}
+              onCalculatePower={calculatePower}
+              onReviewPower={reviewPower}
+              onGenerateContract={generateDataContract}
+              onReviewContract={reviewDataContract}
+              onDownloadTemplate={downloadDataTemplate}
             />
           )}
 
@@ -2529,6 +2712,478 @@ function NumericNullableField({
       />
     </label>
   );
+}
+
+function StudyPreparationPanel({
+  experimentPlan,
+  preparation,
+  loading,
+  onCalculatePower,
+  onReviewPower,
+  onGenerateContract,
+  onReviewContract,
+  onDownloadTemplate,
+}: {
+  experimentPlan: ExperimentPlan;
+  preparation: StudyPreparation | null;
+  loading: boolean;
+  onCalculatePower: (request: PowerAnalysisRequest) => void;
+  onReviewPower: (status: "approved" | "needs_revision", note: string) => void;
+  onGenerateContract: () => void;
+  onReviewContract: (
+    content: DataContractContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+  onDownloadTemplate: () => void;
+}) {
+  const defaultTest: PowerTestType = experimentPlan.design_type === "within_subjects"
+    ? "paired_t"
+    : "independent_t";
+  const [request, setRequest] = useState<PowerAnalysisRequest>({
+    test_type: preparation?.power_analysis?.request.test_type ?? defaultTest,
+    effect_size: preparation?.power_analysis?.request.effect_size
+      ?? experimentPlan.sample_size_planning.expected_effect_size
+      ?? 0.5,
+    alpha: preparation?.power_analysis?.request.alpha
+      ?? experimentPlan.sample_size_planning.alpha
+      ?? 0.05,
+    target_power: preparation?.power_analysis?.request.target_power
+      ?? experimentPlan.sample_size_planning.target_power
+      ?? 0.8,
+    alternative: preparation?.power_analysis?.request.alternative ?? "two-sided",
+    groups: preparation?.power_analysis?.request.groups
+      ?? Math.max(2, experimentPlan.conditions.length),
+    allocation_ratio: preparation?.power_analysis?.request.allocation_ratio ?? 1,
+    attrition_rate: preparation?.power_analysis?.request.attrition_rate
+      ?? experimentPlan.sample_size_planning.attrition_allowance
+      ?? 0,
+    sensitivity_effect_sizes: preparation?.power_analysis?.request.sensitivity_effect_sizes
+      ?? [0.3, 0.5, 0.7],
+    sensitivity_powers: preparation?.power_analysis?.request.sensitivity_powers
+      ?? [0.8, 0.9],
+  });
+  const [powerNote, setPowerNote] = useState(
+    preparation?.power_analysis?.reviewer_note ?? "",
+  );
+
+  return (
+    <section className="preparation-panel">
+      <div className="evidence-item-heading">
+        <div>
+          <span className="section-kicker">研究执行准备</span>
+          <h3>确定性功效分析与数据契约</h3>
+        </div>
+      </div>
+
+      <div className="preparation-section">
+        <h4>功效分析参数</h4>
+        <div className="power-grid">
+          <label>
+            统计检验
+            <select
+              value={request.test_type}
+              onChange={(event) => setRequest((current) => ({
+                ...current,
+                test_type: event.target.value as PowerTestType,
+                groups: event.target.value === "one_way_anova" ? Math.max(3, current.groups) : 2,
+                allocation_ratio: 1,
+                alternative: event.target.value === "one_way_anova" ? "two-sided" : current.alternative,
+              }))}
+            >
+              <option value="independent_t">独立样本 t 检验</option>
+              <option value="paired_t">配对样本 t 检验</option>
+              <option value="one_way_anova">平衡单因素 ANOVA</option>
+              <option value="correlation">相关分析（Fisher z 近似）</option>
+            </select>
+          </label>
+          <label>
+            效应量
+            <input
+              type="number"
+              min={0.001}
+              max={request.test_type === "correlation" ? 0.999 : undefined}
+              step={0.01}
+              value={request.effect_size}
+              onChange={(event) => setRequest((current) => ({
+                ...current,
+                effect_size: Number(event.target.value),
+              }))}
+            />
+          </label>
+          <label>
+            α
+            <input
+              type="number"
+              min={0.001}
+              max={0.999}
+              step={0.001}
+              value={request.alpha}
+              onChange={(event) => setRequest((current) => ({ ...current, alpha: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            目标效能
+            <input
+              type="number"
+              min={0.01}
+              max={0.99}
+              step={0.01}
+              value={request.target_power}
+              onChange={(event) => setRequest((current) => ({ ...current, target_power: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            检验方向
+            <select
+              value={request.alternative}
+              disabled={request.test_type === "one_way_anova"}
+              onChange={(event) => setRequest((current) => ({
+                ...current,
+                alternative: event.target.value as PowerAnalysisRequest["alternative"],
+              }))}
+            >
+              <option value="two-sided">双侧</option>
+              <option value="larger">单侧：较大</option>
+              <option value="smaller">单侧：较小</option>
+            </select>
+          </label>
+          <label>
+            组数
+            <input
+              type="number"
+              min={2}
+              max={12}
+              disabled={request.test_type !== "one_way_anova"}
+              value={request.groups}
+              onChange={(event) => setRequest((current) => ({ ...current, groups: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            组间分配比
+            <input
+              type="number"
+              min={0.1}
+              max={10}
+              step={0.1}
+              disabled={request.test_type !== "independent_t"}
+              value={request.allocation_ratio}
+              onChange={(event) => setRequest((current) => ({ ...current, allocation_ratio: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            预计脱落率
+            <input
+              type="number"
+              min={0}
+              max={0.99}
+              step={0.01}
+              value={request.attrition_rate}
+              onChange={(event) => setRequest((current) => ({ ...current, attrition_rate: Number(event.target.value) }))}
+            />
+          </label>
+        </div>
+        <div className="field-grid">
+          <NumberListField
+            label="敏感性效应量"
+            value={request.sensitivity_effect_sizes}
+            onChange={(value) => setRequest((current) => ({ ...current, sensitivity_effect_sizes: value }))}
+          />
+          <NumberListField
+            label="敏感性目标效能"
+            value={request.sensitivity_powers}
+            onChange={(value) => setRequest((current) => ({ ...current, sensitivity_powers: value }))}
+          />
+        </div>
+        <button
+          className="primary-button compact"
+          disabled={loading || request.effect_size <= 0}
+          onClick={() => onCalculatePower(request)}
+        >
+          {preparation?.power_analysis ? "重新计算" : "计算所需样本量"}
+        </button>
+      </div>
+
+      {preparation?.power_analysis && (
+        <PowerAnalysisResult
+          analysis={preparation.power_analysis}
+          loading={loading}
+          note={powerNote}
+          onNote={setPowerNote}
+          onReview={onReviewPower}
+        />
+      )}
+
+      <div className="preparation-section">
+        <div className="section-action-heading">
+          <div>
+            <h4>数据契约</h4>
+            <p>定义每列的数据类型、编码、范围、敏感性和采集来源。</p>
+          </div>
+          {!preparation?.data_contract && (
+            <button disabled={loading} onClick={onGenerateContract}>生成数据字典</button>
+          )}
+        </div>
+        {preparation?.data_contract && (
+          <DataContractEditor
+            contract={preparation.data_contract}
+            loading={loading}
+            onReview={onReviewContract}
+            onDownload={onDownloadTemplate}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function PowerAnalysisResult({
+  analysis,
+  loading,
+  note,
+  onNote,
+  onReview,
+}: {
+  analysis: PowerAnalysis;
+  loading: boolean;
+  note: string;
+  onNote: (value: string) => void;
+  onReview: (status: "approved" | "needs_revision", note: string) => void;
+}) {
+  const primary = analysis.primary_result;
+  return (
+    <div className="preparation-section power-results">
+      <div className="evidence-item-heading">
+        <div>
+          <h4>功效分析结果</h4>
+          <small>{analysis.method}</small>
+        </div>
+        <span className={`evidence-status ${analysis.status}`}>
+          {preparationStatusLabel(analysis.status)}
+        </span>
+      </div>
+      {analysis.status === "stale" && <div className="approval-readiness">实验方案已变化，请重新计算。</div>}
+      <div className="power-result-summary">
+        <div><span>原始总样本量</span><strong>{primary.nominal_total_n}</strong></div>
+        <div><span>脱落调整后</span><strong>{primary.adjusted_total_n}</strong></div>
+        <div><span>原始分组</span><strong>{primary.nominal_per_group.join(" / ")}</strong></div>
+        <div><span>调整后分组</span><strong>{primary.adjusted_per_group.join(" / ")}</strong></div>
+      </div>
+      <div className="matrix-scroll">
+        <table className="sensitivity-table">
+          <thead><tr><th>效应量</th><th>目标效能</th><th>原始 N</th><th>调整后 N</th><th>调整后分组</th></tr></thead>
+          <tbody>
+            {[primary, ...analysis.sensitivity_results].map((scenario, index) => (
+              <tr key={`${scenario.effect_size}-${scenario.target_power}-${index}`}>
+                <td>{scenario.effect_size.toFixed(3)}</td>
+                <td>{scenario.target_power.toFixed(2)}</td>
+                <td>{scenario.nominal_total_n}</td>
+                <td>{scenario.adjusted_total_n}</td>
+                <td>{scenario.adjusted_per_group.join(" / ")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="package-versions">
+        {Object.entries(analysis.package_versions).map(([name, version]) => (
+          <span key={name}>{name} {version}</span>
+        ))}
+      </div>
+      <label>
+        复核备注
+        <textarea rows={2} value={note} onChange={(event) => onNote(event.target.value)} />
+      </label>
+      <div className="evidence-review-actions">
+        <button disabled={loading || note.trim().length < 3} onClick={() => onReview("needs_revision", note)}>
+          标记需修订
+        </button>
+        <button className="approve-evidence" disabled={loading || analysis.status === "stale"} onClick={() => onReview("approved", note)}>
+          批准功效分析
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DataContractEditor({
+  contract,
+  loading,
+  onReview,
+  onDownload,
+}: {
+  contract: DataContract;
+  loading: boolean;
+  onReview: (
+    content: DataContractContent,
+    status: "approved" | "needs_revision",
+    note: string,
+  ) => void;
+  onDownload: () => void;
+}) {
+  const [content, setContent] = useState<DataContractContent>({
+    row_grain: contract.row_grain,
+    primary_key_fields: contract.primary_key_fields,
+    fields: contract.fields,
+    collection_notes: contract.collection_notes,
+  });
+  const [note, setNote] = useState(contract.reviewer_note ?? "");
+  return (
+    <div className="data-contract-editor">
+      <div className="evidence-item-heading">
+        <span className={`evidence-status ${contract.status}`}>
+          {preparationStatusLabel(contract.status)}
+        </span>
+      </div>
+      {contract.status === "stale" && <div className="approval-readiness">实验方案已变化，请重新生成数据契约。</div>}
+      <label>
+        每行数据代表什么
+        <textarea
+          rows={2}
+          value={content.row_grain}
+          onChange={(event) => setContent((current) => ({ ...current, row_grain: event.target.value }))}
+        />
+      </label>
+      <StringListField
+        label="联合主键字段"
+        value={content.primary_key_fields}
+        onChange={(value) => setContent((current) => ({ ...current, primary_key_fields: value }))}
+      />
+      <div className="data-field-list">
+        {content.fields.map((field, index) => (
+          <div className="data-field-card" key={`${field.key}-${index}`}>
+            <div className="field-grid">
+              <label>
+                字段名
+                <input
+                  value={field.key}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item),
+                  }))}
+                />
+              </label>
+              <label>
+                中文标签
+                <input
+                  value={field.label}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item),
+                  }))}
+                />
+              </label>
+            </div>
+            <div className="field-grid">
+              <label>
+                数据类型
+                <select
+                  value={field.data_type}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, data_type: event.target.value as DataField["data_type"] } : item),
+                  }))}
+                >
+                  <option value="string">文本</option>
+                  <option value="integer">整数</option>
+                  <option value="float">数值</option>
+                  <option value="category">分类</option>
+                  <option value="boolean">布尔</option>
+                  <option value="datetime">日期时间</option>
+                </select>
+              </label>
+              <label>
+                单位
+                <input
+                  value={field.unit ?? ""}
+                  onChange={(event) => setContent((current) => ({
+                    ...current,
+                    fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, unit: event.target.value || null } : item),
+                  }))}
+                />
+              </label>
+            </div>
+            <div className="field-flags">
+              <label><input type="checkbox" checked={field.required} onChange={(event) => setContent((current) => ({ ...current, fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, required: event.target.checked } : item) }))} />必填</label>
+              <label><input type="checkbox" checked={field.sensitive} onChange={(event) => setContent((current) => ({ ...current, fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, sensitive: event.target.checked } : item) }))} />敏感字段</label>
+            </div>
+            <div className="field-grid">
+              <StringListField
+                label="分类编码"
+                value={field.categories}
+                onChange={(value) => setContent((current) => ({ ...current, fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, categories: value } : item) }))}
+              />
+              <StringListField
+                label="缺失值编码"
+                value={field.missing_values}
+                onChange={(value) => setContent((current) => ({ ...current, fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, missing_values: value } : item) }))}
+              />
+            </div>
+            <label>
+              测量时点
+              <input value={field.measurement_timing} onChange={(event) => setContent((current) => ({ ...current, fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, measurement_timing: event.target.value } : item) }))} />
+            </label>
+            <label>
+              数据来源
+              <textarea rows={2} value={field.source} onChange={(event) => setContent((current) => ({ ...current, fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, source: event.target.value } : item) }))} />
+            </label>
+            <StringListField
+              label="校验规则"
+              value={field.validation_rules}
+              onChange={(value) => setContent((current) => ({ ...current, fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, validation_rules: value } : item) }))}
+            />
+          </div>
+        ))}
+      </div>
+      <StringListField
+        label="采集说明"
+        value={content.collection_notes}
+        onChange={(value) => setContent((current) => ({ ...current, collection_notes: value }))}
+      />
+      <label>
+        复核备注
+        <textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} />
+      </label>
+      <div className="evidence-review-actions contract-actions">
+        {contract.status === "approved" && (
+          <button className="download-template" disabled={loading} onClick={onDownload}>下载 CSV 模板</button>
+        )}
+        <button disabled={loading || note.trim().length < 3} onClick={() => onReview(content, "needs_revision", note)}>标记需修订</button>
+        <button className="approve-evidence" disabled={loading || contract.status === "stale"} onClick={() => onReview(content, "approved", note)}>批准数据契约</button>
+      </div>
+    </div>
+  );
+}
+
+function NumberListField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number[];
+  onChange: (value: number[]) => void;
+}) {
+  return (
+    <label>
+      {label} <small>逗号分隔</small>
+      <input
+        value={value.join(", ")}
+        onChange={(event) => onChange(
+          event.target.value.split(",").map((item) => Number(item.trim())).filter((item) => Number.isFinite(item) && item > 0),
+        )}
+      />
+    </label>
+  );
+}
+
+function preparationStatusLabel(status: PreparationStatus) {
+  return {
+    pending_review: "待复核",
+    approved: "已批准",
+    needs_revision: "需修订",
+    stale: "已过期",
+  }[status];
 }
 
 function ArtifactList({
